@@ -1,0 +1,19 @@
+{
+  "name": "catworld",
+  "version": "0.0.1",
+  "description": "猫的世界 (Cat World) — a Zelda-like open-world cat game. Web prototype, to be migrated to Godot 4.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}

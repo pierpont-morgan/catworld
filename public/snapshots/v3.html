@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>猫的世界 · v3 真实白猫（含跑步耗尽闪烁 bug）</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #1a1a1f;
+        height: 100%;
+        overflow: hidden;
+      }
+      #game {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #stamp {
+        position: fixed; left: 10px; bottom: 8px; z-index: 10;
+        font: 12px/1.4 monospace; color: #ffffff99; pointer-events: none;
+        text-shadow: 0 1px 2px #000;
+      }
+    </style>
+    <!-- 入口用独立文件名（非 index.html），避开 Vite 开发服务器对目录/index 的特殊处理。 -->
+    <!-- 关键：经典脚本 + defer，不用 type="module"。产物为 IIFE 无模块语法，
+         type="module" 在 file:// 下会被 CORS 拦截白屏；defer 保证在 #game 解析后执行。 -->
+    <script defer src="./v3/assets/index.js"></script>
+  </head>
+  <body>
+    <div id="game"></div>
+    <div id="stamp">猫的世界 · v3 · 2026-06-19 · 真实白猫接入（四方向真实素材）· ⚠️含「跑到力气耗尽时奔跑动画闪烁」的 bug · 存档</div>
+  </body>
+</html>

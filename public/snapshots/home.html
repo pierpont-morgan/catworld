@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>猫的世界 · 开发里程碑存档</title>
+    <style>
+      body {
+        margin: 0; min-height: 100vh; background: #1a1a1f; color: #e8e8ea;
+        font: 16px/1.6 system-ui, "Segoe UI", sans-serif;
+        display: flex; flex-direction: column; align-items: center; padding: 48px 16px;
+      }
+      h1 { font-size: 24px; margin: 0 0 4px; }
+      p.sub { color: #9a9aa2; margin: 0 0 32px; }
+      ul { list-style: none; padding: 0; width: 100%; max-width: 640px; }
+      li { background: #26262e; border: 1px solid #34343e; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+      li a { color: #ffd166; text-decoration: none; font-size: 18px; font-weight: 600; }
+      li a:hover { text-decoration: underline; }
+      .tag { display: inline-block; background: #3a5a40; color: #cfe8cf; font-size: 12px; padding: 2px 8px; border-radius: 6px; margin-left: 8px; }
+      .desc { color: #b8b8c0; margin-top: 6px; font-size: 14px; }
+      .future { color: #6a6a72; font-style: italic; }
+    </style>
+  </head>
+  <body>
+    <h1>🐱 猫的世界 · 开发里程碑存档</h1>
+    <p class="sub">每个节点都是当时网页的独立冻结副本，互不影响，记录玩法的演进。</p>
+    <ul>
+      <li>
+        <a href="./v3.html">v3 · 真实白猫接入（含闪烁 bug）</a><span class="tag">2026-06-19</span>
+        <div class="desc">首次把代码生成的橘猫换成真实 CC0 白猫素材（走/跑/四方向专属帧、不翻转）。定格了一个 bug：跑到体力耗尽时，奔跑动画在 run/walk 之间每帧横跳，猫咪闪烁成重叠的固定画面——这是加「体力迟滞」修复之前的样子。</div>
+      </li>
+      <li>
+        <a href="./v2.html">v2 · 程序化四方向猫</a><span class="tag">2026-06-19</span>
+        <div class="desc">已有手柄、战斗（三连击/冲刺/史莱姆）、Tilemap 区域地图、程序化像素美术，猫能上下左右四方向。用的还是代码生成的橘猫，未换真实美术。</div>
+      </li>
+      <li>
+        <a href="./v1.html">v1 · 初版原型</a><span class="tag">2026-06-19</span>
+        <div class="desc">第一次生成的网页：橘猫在草地上 WASD/方向键奔跑，Shift 消耗体力，随机石头障碍，相机跟随。还没有手柄、战斗、地图、真实美术。</div>
+      </li>
+      <li class="future">下一个节点待添加（如 v3 真实白猫美术、任务系统…）——做到满意的阶段就喊我冻一份。</li>
+    </ul>
+  </body>
+</html>

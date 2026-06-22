@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+.vite/
+.playwright-mcp/
+.tmp_crop/
+.tmp_assets/
+# 本地调试截图：仓库根目录下的 PNG 一律忽略（真实美术放 public/assets/ 或 src/assets/，在子目录里照常提交）
+/*.png
+# 与 Claude 的对话记录（含会话历史，敏感，不入库/不上传）
+对话记录/
+.claude/

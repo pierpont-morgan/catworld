@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>猫的世界 · v1 初版原型</title>
+    <style>
+      html, body { margin: 0; padding: 0; background: #1a1a1f; height: 100%; overflow: hidden; }
+      #game { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+      #stamp {
+        position: fixed; left: 10px; bottom: 8px; z-index: 10;
+        font: 12px/1.4 monospace; color: #ffffff99; pointer-events: none;
+        text-shadow: 0 1px 2px #000;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <div id="stamp">猫的世界 · v1 初版原型 · 2026-06-19 · 第一次生成的网页（存档，不再改动）</div>
+
+    <!-- 本地 Phaser，确保此存档独立、离线可运行、永远定格 v1 -->
+    <script src="./lib/phaser-3.90.min.js"></script>
+    <script>
+      // ============================================================
+      // 《猫的世界》v1 初版原型 —— 单文件存档复刻。
+      // 仅含：俯视草地 + 橘猫 WASD/方向键奔跑 + Shift 体力 + 随机石头 + 相机跟随。
+      // 还没有：手柄、战斗、Tilemap、真实美术、四方向。这些都是后续节点。
+      // ============================================================
+      const GAME = { width: 960, height: 540, backgroundColor: "#3a5a40" };
+      const WORLD = { width: 3200, height: 3200 };
+
+      // ----- 引擎无关的体力逻辑 -----
+      function createCatStats() {
+        return { health: 100, maxHealth: 100, stamina: 100, maxStamina: 100, walkSpeed: 160, runSpeed: 300 };
+      }
+      const DRAIN = 25, REGEN = 18;
+      function tickStamina(stats, wantsToRun, dt) {
+        const canRun = wantsToRun && stats.stamina > 0;
+        if (canRun) { stats.stamina = Math.max(0, stats.stamina - DRAIN * dt); return stats.runSpeed; }
+        stats.stamina = Math.min(stats.maxStamina, stats.stamina + REGEN * dt);
+        return stats.walkSpeed;
+      }
+
+      // ----- 玩家猫咪 -----
+      class Cat {
+        constructor(scene, x, y) {
+          this.stats = createCatStats();
+          this.sprite = scene.physics.add.sprite(x, y, "cat");
+          this.sprite.setCollideWorldBounds(true);
+          this.sprite.setSize(40, 32).setOffset(4, 16);
+        }
+        update(dir, wantsToRun, dtMs) {
+          const speed = tickStamina(this.stats, wantsToRun, dtMs / 1000);
+          this.sprite.setVelocity(dir.x * speed, dir.y * speed);
+          if (dir.x < 0) this.sprite.setFlipX(true);
+          else if (dir.x > 0) this.sprite.setFlipX(false);
+        }
+      }
+
+      // ----- 启动场景：程序化生成贴图 -----
+      class BootScene extends Phaser.Scene {
+        constructor() { super("Boot"); }
+        create() {
+          const g = this.add.graphics();
+          g.fillStyle(0xe8a33d, 1);
+          g.fillRoundedRect(8, 16, 48, 32, 8);
+          g.fillCircle(48, 24, 14);
+          g.fillTriangle(40, 8, 48, 22, 34, 20);
+          g.fillTriangle(56, 8, 50, 22, 62, 20);
+          g.fillRoundedRect(2, 20, 10, 6, 3);
+          g.fillStyle(0x222222, 1);
+          g.fillCircle(50, 22, 2.5);
+          g.generateTexture("cat", 64, 56);
+          g.destroy();
+
+          const grass = this.add.graphics();
+          grass.fillStyle(0x4a7c4a, 1); grass.fillRect(0, 0, 64, 64);
+          grass.fillStyle(0x42703f, 1); grass.fillRect(0, 0, 32, 32); grass.fillRect(32, 32, 32, 32);
+          grass.generateTexture("grass", 64, 64); grass.destroy();
+
+          const rock = this.add.graphics();
+          rock.fillStyle(0x6b5b4f, 1); rock.fillRoundedRect(4, 4, 56, 56, 12);
+          rock.fillStyle(0x564a40, 1); rock.fillRoundedRect(12, 12, 24, 20, 8);
+          rock.generateTexture("rock", 64, 64); rock.destroy();
+
+          this.scene.start("World");
+        }
+      }
+
+      // ----- 主世界 -----
+      class WorldScene extends Phaser.Scene {
+        constructor() { super("World"); }
+        create() {
+          this.physics.world.setBounds(0, 0, WORLD.width, WORLD.height);
+          this.add.tileSprite(0, 0, WORLD.width, WORLD.height, "grass").setOrigin(0, 0).setDepth(-10);
+
+          const obstacles = this.physics.add.staticGroup();
+          const margin = 200;
+          for (let i = 0; i < 60; i++) {
+            const x = Phaser.Math.Between(margin, WORLD.width - margin);
+            const y = Phaser.Math.Between(margin, WORLD.height - margin);
+            if (Phaser.Math.Distance.Between(x, y, WORLD.width / 2, WORLD.height / 2) < 150) continue;
+            obstacles.create(x, y, "rock");
+          }
+
+          this.cat = new Cat(this, WORLD.width / 2, WORLD.height / 2);
+          this.physics.add.collider(this.cat.sprite, obstacles);
+
+          this.cameras.main.setBounds(0, 0, WORLD.width, WORLD.height);
+          this.cameras.main.startFollow(this.cat.sprite, true, 0.1, 0.1);
+
+          const kb = this.input.keyboard;
+          this.cursors = kb.createCursorKeys();
+          this.wasd = kb.addKeys("W,A,S,D");
+          this.runKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
+
+          this.staminaBar = this.add.graphics().setScrollFactor(0).setDepth(100);
+          this.add.text(16, 14, "WASD/方向键 移动 · Shift 奔跑", { fontSize: "16px", color: "#ffffff" })
+            .setScrollFactor(0).setDepth(100);
+        }
+        update(_t, delta) {
+          const dir = new Phaser.Math.Vector2(0, 0);
+          if (this.cursors.left.isDown || this.wasd.A.isDown) dir.x -= 1;
+          if (this.cursors.right.isDown || this.wasd.D.isDown) dir.x += 1;
+          if (this.cursors.up.isDown || this.wasd.W.isDown) dir.y -= 1;
+          if (this.cursors.down.isDown || this.wasd.S.isDown) dir.y += 1;
+          dir.normalize();
+          this.cat.update(dir, this.runKey.isDown, delta);
+
+          const { stamina, maxStamina } = this.cat.stats;
+          const w = 200, pct = stamina / maxStamina;
+          this.staminaBar.clear();
+          this.staminaBar.fillStyle(0x000000, 0.4).fillRect(16, 44, w, 14);
+          this.staminaBar.fillStyle(0xffd166, 1).fillRect(16, 44, w * pct, 14);
+        }
+      }
+
+      new Phaser.Game({
+        type: Phaser.AUTO,
+        parent: "game",
+        width: GAME.width,
+        height: GAME.height,
+        backgroundColor: GAME.backgroundColor,
+        pixelArt: true,
+        physics: { default: "arcade", arcade: { debug: false } },
+        scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+        scene: [BootScene, WorldScene],
+      });
+    </script>
+  </body>
+</html>
