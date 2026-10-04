@@ -24,7 +24,7 @@ export class BootScene extends Phaser.Scene {
   }
 
   create(): void {
-    generatePixelArt(this); // 生成未提供真实素材的贴图（含 slash）
+    generatePixelArt(this); // 生成未提供真实素材的程序化贴图
 
     for (const a of ANIMS) {
       if (this.anims.exists(a.key)) continue;

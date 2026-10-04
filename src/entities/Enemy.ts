@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { HARD_STUN_MS } from "../core/Combat";
 
 /**
  * 敌人史莱姆。简单 AI：进入仇恨范围就追猫，被击中时进入短暂硬直被击退。
@@ -25,7 +26,7 @@ interface SlimeDef {
 
 const SLIME_DEFS: Record<SlimeKind, SlimeDef> = {
   purple: { texture: "slime", anim: "slime-idle", maxHealth: 40, speed: 70, aggroRange: 280, scale: 1, contactDamage: 8 },
-  green: { texture: "slime-green", anim: "slime-green-idle", maxHealth: 70, speed: 62, aggroRange: 300, scale: 1.1, contactDamage: 10 },
+  green: { texture: "slime-green", anim: "slime-green-idle", maxHealth: 69, speed: 62, aggroRange: 300, scale: 1.1, contactDamage: 10 },
   red: { texture: "slime-red", anim: "slime-red-idle", maxHealth: 110, speed: 92, aggroRange: 340, scale: 1.05, contactDamage: 14 },
   // 紫王：大型紫史莱姆，死亡时由 WorldScene 分裂成 4 只紫色小史莱姆
   king: { texture: "slime-king", anim: "slime-king-idle", maxHealth: 260, speed: 46, aggroRange: 380, scale: 1.9, contactDamage: 22 },
@@ -39,7 +40,7 @@ export class Enemy {
   private health: number;
   private readonly def: SlimeDef;
   private stunUntil = 0;
-  /** 长僵直(>=1s)的泛蓝指示截止时刻；到点在 update 里清掉 tint */
+  /** 长僵直(>=HARD_STUN_MS 的硬僵直阈值)的泛蓝指示截止时刻；到点在 update 里清掉 tint */
   private hardStunUntil = 0;
   private dead = false;
   private readonly hpBar: Phaser.GameObjects.Graphics;
@@ -144,7 +145,7 @@ export class Enemy {
     this.health -= amount;
     this.sprite.setVelocity(knockbackX, knockbackY);
     this.stunUntil = now + stunMs;
-    const hard = stunMs >= 1000; // 长僵直（飞扑）：泛蓝 + 设为不可推动
+    const hard = stunMs >= HARD_STUN_MS; // 长僵直（飞扑，>=硬僵直阈值）：泛蓝 + 设为不可推动
     if (hard) {
       this.hardStunUntil = now + stunMs;
       // 关键：不可推动后，冲刺的猫不能再用碰撞体把敌人“推土机”式带飞，

@@ -26,19 +26,27 @@ export interface AttackSpec {
   comboIndex?: number;
 }
 
+/**
+ * "硬僵直"阈值（毫秒）：stunMs >= 此值才算硬僵直，可打断恐龙喷火/前摇、
+ * 让史莱姆泛蓝 + 不可推动。三连第三击的 stunMs 恰好等于此阈值（见下），
+ * 调数值时注意：第三击必须 >= HARD_STUN_MS，否则悄悄失去打断能力。
+ */
+export const HARD_STUN_MS = 1000;
+
 // 爪击三连：第1下左爪、第2下右爪、第3下改为短距飞扑（鼓励打完整连招）。
 // 伤害：第1下在原 12 上 -40%≈7，第2下在原 12 上 -20%≈10，第3下保持原 24。
 const CLAW_COMBO: readonly AttackSpec[] = [
   { kind: "claw", comboIndex: 0, damage: 7, knockback: 150, reach: 42, radius: 34, activeMs: 160 },
   { kind: "claw", comboIndex: 1, damage: 10, knockback: 170, reach: 42, radius: 34, activeMs: 160 },
   // 第三击：短距飞扑。位移短(dashMs 小)，命中窗口 activeMs 给足。
-  // 眩晕 1 秒(达到"硬僵直"阈值，可打断恐龙喷火)、击退 240。
+  // 眩晕 1 秒 = HARD_STUN_MS（硬僵直阈值，可打断恐龙喷火/前摇）、击退 240。
+  // 数值定案（2026-10-04）：以代码为准，CLAUDE.md 已同步为 1000/240。
   {
     kind: "dash",
     comboIndex: 2,
     damage: 24,
     knockback: 240,
-    stunMs: 1000,
+    stunMs: HARD_STUN_MS,
     reach: 0,
     radius: 42,
     activeMs: 200,
@@ -49,13 +57,14 @@ const CLAW_COMBO: readonly AttackSpec[] = [
 
 const DASH_ATTACK: AttackSpec = {
   kind: "dash",
-  damage: 28,
+  damage: 34, // 蓄力大招要有大招的样子：明显高于三连第三击的 24
   knockback: 300, // 右键飞扑击退更远
-  stunMs: 2500, // 右键飞扑眩晕 2.5 秒（达硬僵直阈值，可打断恐龙喷火）
+  stunMs: 2500, // 右键飞扑眩晕 2.5 秒（达硬僵直阈值，可打断恐龙喷火/前摇）
   reach: 0,
   radius: 36,
   activeMs: 220,
   dashSpeed: 620,
+  dashMs: 220, // 显式写出（与 CLAW_COMBO[2] 的 dashMs:55 对称，别靠 ?? 兜底）
 };
 
 /** 愤怒条从 0 充满所需的蓄力时长（毫秒）：按住右键 2.5 秒可从空蓄满。打中敌人也会加怒气。 */

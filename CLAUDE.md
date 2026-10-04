@@ -55,14 +55,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   连招节奏由 `ComboController` 的硬直/接招窗口控制。**第1下左爪(cat-attack)、第2下右爪(cat-attack2)、
   第3下改为短距飞扑**(`CLAW_COMBO[2].kind="dash"`,`dashSpeed` 同右键但 `dashMs` 仅 1/4 → 位移约
   右键飞扑的 1/4;`AttackSpec.dashMs` 让"位移时长"与"命中时长 activeMs"解耦)。伤害:7 / 10 / 24
-  (鼓励打完整连招)。第3下击退只给 `knockback=210`(约普通爪击 1.5 倍距离),改用 `stunMs=2000`
-  的 **2 秒僵直**防止收招贴脸吃伤害(僵直敌人不动、不造成接触伤害,见下)。
+  (鼓励打完整连招)。第3下击退 `knockback=240`,配 `stunMs=1000` 的 **1 秒硬僵直**(恰好等于
+  `core/Combat.ts` 的 `HARD_STUN_MS` 阈值,可打断恐龙喷火/前摇;调数值时第三击必须 ≥ 该阈值)。
+  僵直敌人不动、不造成接触伤害(见下),让猫收招后能贴着敌人安全输出。
   `Cat.tryClaw` 按 `spec.comboIndex` 选左/右爪动画,遇 `kind==="dash"` 走 `startDash`。
 - **飞扑(冲刺重击)**:改为**愤怒条**驱动。怒气 `CatStats.rage/maxRage`(默认 0/100):右键/手柄 Y **按住**→
   `Cat.beginCharge`(原地不动、可瞄准,update 里按 `RAGE_FULL_CHARGE_MS`=2.5 秒从 0 充满的速率涨怒气),
   **打中敌人**也涨怒气(`WorldScene.updateHit` 里 `cat.addRage(命中伤害)`)。**松开**→ `Cat.releaseCharge`:
   **怒气满**才发动飞扑、清空怒气并返回 `AttackSpec`;没满则取消、**怒气保留**。`WorldScene` 用 `pointerup`/
-  手柄 `up` 触发松开,并在 update 里用 `isDashHeld()` 兜底。HUD 第三条(橙,满了变绿)显示怒气。
+  手柄 `up` 触发松开,并在 update 里用 `isDashHeld()` 兜底(背包/对话打开时不补发,打开瞬间已
+  `Cat.cancelCharge` 取消蓄力,防误触打出飞扑)。**怒气已满时按下右键/Y 直接瞬发**
+  (`Cat.tryInstantDash`,无需蓄力圈)。飞扑伤害 34(对得起 2.5 秒蓄力),`stunMs=2500` 2.5 秒硬僵直,
+  `dashMs` 显式 220(与三连第三击的 `dashMs:55` 对称,不靠 `??` 兜底)。HUD 第三条(橙,满了变绿)显示怒气。
 
 **攻击时停止移动**:爪击硬直窗口(`now < attackAnimUntil`)内 `Cat.update` 把速度清零、锁定朝向、
 只恢复体力(飞扑 dash 不算,它靠位移命中)。为此 `WorldScene.update` 把 `queuedAttack` 的消费
@@ -71,12 +75,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 生命系统(回血 / 死亡 / 吃鱼)
 
 - **回血靠吃鱼**:`WorldScene.spawnFish` 在**靠岸**(四邻有可走地块)的水瓦片上放最多 6 条鱼,
-  保证猫能从岸边够到(水不可进入)。`findEatTarget` = 捕获半径 `FISH_CAPTURE_RANGE`(104px)内、
+  保证猫能从岸边够到(水不可进入)。`findEatTarget` = 捕获半径 `FISH_CAPTURE_RANGE`(52px)内、
   **且猫头朝向它**(facing 与"猫→鱼"方向点积 ≥ `FISH_FACING_DOT`=0.5,约 60°)的最近一条;
   可吃时在鱼身画脉冲高亮环。按 **E / 手柄 A** 触发 `tryEatFish` → `Cat.heal(FISH_HEAL=25)` + 冒 `+25` 飘字。
+  吃鱼时小恐龙宠物会开心一跳(`Pet.happy()`)。
+- **森林回血靠浆果丛**:`ForestScene` 出生点附近 3 丛(`entities/BerryBush.ts`),靠近按 E 摘 +15 血,
+  摘完变灰 45 秒后长回(有绿环提示 + 重生弹跳)。
 - **死亡 → 重来**:`Cat.tryTakeDamage` 已把血夹到 ≥0;`WorldScene.update` 末尾检测 `health<=0`
   调 `gameOver`:置 `dead`(update 提前 return 冻结世界)、`physics.pause()`、`Cat.die()`(变灰停动画)、
   铺半透明遮罩 + "猫咪倒下了…" 对话框,监听 `keydown-R` / `pointerdown` 一次 → `scene.restart()`(create 全量重置)。
+  **孩子向:死亡调 `runState.softReset()` 不清空任何战利品**(背包/宠物/孵化/皮肤/计数全保留),惩罚仅为回出生点重来。
 
 **敌人/小鱼再生**:`collectSpawnTiles` 一次性缓存"敌人可生成瓦片(可走、离出生点 >320)"和
 "靠岸水瓦片"。每色史莱姆(`SLIME_MAX` 紫4/绿3/红2/王1)和小鱼(`FISH_MAX`=6)各登记一个
@@ -86,8 +94,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **僵直(stun)**:`AttackSpec.stunMs` 经 `ActiveHit` 传到 `Enemy.takeDamage(...,stunMs=220)`,设 `stunUntil`。
 `Enemy.isStunned(now)` 为真时:`update` 不追猫,且 `WorldScene` 的接触伤害检测**跳过该敌人**(僵直敌人不掉猫血)。
-长僵直(>=1s)额外泛蓝(`hardStunUntil` + 蓝 tint,到点在 update 清掉)。三连飞扑用 `stunMs=2000` 给 2 秒僵直,
-配合小击退(`knockback=210`),让猫收招后能贴着敌人安全输出而不吃接触伤害。
+长僵直(>= `HARD_STUN_MS`,见 `core/Combat.ts`)额外泛蓝(`hardStunUntil` + 蓝 tint,到点在 update 清掉)。
+恐龙同理:只有硬僵直能打断喷火**和前摇**(前摇被打断会清掉泛红预警);普通爪击在喷火/前摇期间只掉血。
+恐龙开火前会先拉近到火舌射程内(`FLAME_COMMIT_DIST` = 火舌长 + 24),不会再"空喷"。
+
+## 本轮新增(2026-10-04):bug 修复 + 玩法补完 + 打击感
+
+**修的真 bug**:
+- 金钥匙锁死:金史莱姆随机选点 12 次全失败时不再置 `goldSpawned`,下次杀恐龙(补充的也算)重试,奖励链不断。
+- 恐龙"空喷":开火前先拉近到 `FLAME_COMMIT_DIST`(火舌长+24)内再进前摇;前摇可被硬僵直打断(清泛红)。
+- 战斗中按 E 不再能逃出橘猫战(仅 play/won 阶段可回主世界)。
+- 开背包瞬间 `Cat.cancelCharge()` 取消蓄力(怒气保留),且背包/对话打开时蓄力兜底不补发 → 背包开着打不出飞扑。
+- 绿史莱姆 70→69,三连(7+10+24)+飞扑(34)一套带走,数值对齐"整套带走"设计。
+- 第三击数值定案为代码的 1000/240(文档已同步),并收成 `core/Combat.ts` 的 `HARD_STUN_MS` 具名常量,Enemy/Dino 共用。
+- 金爪清零时 `Inventory.remove()` 自动卸下,不再静默自动重装备。
+- 橘猫改物理体 + 速度移动(96px/秒,delta 步进):不再穿墙、不随帧率变;战斗击退改 delta 积分。
+
+**补的玩法断点**:
+- **宝箱 + 黑猫皮肤**:主世界出生点附近有宝箱,金钥匙开它 → 解锁黑猫皮肤(同版式真实素材 `public/assets/cat-black.png`,
+  `manifest` 里 `catb-` 前缀全套动画),自动换上;B 背包可换回白猫。金钥匙说明已更新,不再是"暂未开放"。
+- **橘猫胜利结算**:打赢后 3 句收尾对话 → 回满血 + 生命上限 +20 → 20 秒后刷回新松鼠。`loseBattle` 踢回主世界不变。
+- **森林回血**:3 丛浆果丛(E 摘 +15,45 秒长回)。
+- **松鼠计数成就**:`runState.squirrelsCaught`,第 1/3/5 只抓到时庆祝;打赢橘猫后松鼠可重复抓。
+- **死亡惩罚**:`runState.softReset()` 保留一切战利品,只回出生点。
+- **任务指引**:主世界/森林 HUD 第二行一句话目标(`getQuestText()`),随进度推进。
+- **宠物**:吃鱼/摘果时开心一跳 + 冒 ❤;跟随中每 ~9 秒自动冒一次 ❤。
+- 长按 `2` 传送森林改为仅 `DEV` 模式可用(调试后门不进正式玩法)。
+
+**打击感 + 音效**:
+- 命中顿帧 50ms(`hitStop`:暂停整个场景,原生 setTimeout 恢复)+ 飞扑命中震屏 + 猫受击红闪(120ms)。
+- `src/audio/sfx.ts`:Web Audio 全合成音效(挥/命中/飞扑/吃/拾取/钥匙/门/胜/败/点击/孵化/受伤/浆果),零素材;
+  `main.ts` 在首次用户手势时 `initSfx()`(浏览器自动播放策略),M 键静音(两场景都有提示)。
 
 ## 地图(Tilemap)
 

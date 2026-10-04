@@ -8,6 +8,8 @@ import { InventoryUI, HatchInfo } from "../entities/InventoryUI";
 import { AttackSpec } from "../core/Combat";
 import { runState } from "../core/RunState";
 import { EMPTY, generateForest, GeneratedWorld } from "../core/worldgen";
+import { playSfx, toggleMute } from "../audio/sfx";
+import { BerryBush } from "../entities/BerryBush";
 
 /**
  * 第二关：森林（22×22 瓦片，面积约主地图 1/5，全是森林）。
@@ -51,7 +53,6 @@ type Phase = "play" | "ginger" | "dialog" | "battle" | "won";
 
 /** 橘猫战斗数值 */
 const GINGER_MAX_HP = 120;
-const GINGER_SPEED = 1.6; // 每帧位移（非物理 lerp）
 const GINGER_CONTACT_DMG = 12;
 const GINGER_CONTACT_RANGE = 40;
 
@@ -64,17 +65,29 @@ export class ForestScene extends Phaser.Scene {
   private runKey!: Phaser.Input.Keyboard.Key;
   private advanceKey!: Phaser.Input.Keyboard.Key;
   private invKey!: Phaser.Input.Keyboard.Key;
+  private muteKey!: Phaser.Input.Keyboard.Key;
 
   private squirrel?: Squirrel;
-  private ginger?: Phaser.GameObjects.Sprite;
+  private ginger?: Phaser.Physics.Arcade.Sprite;
   private pet?: Pet;
   private dialog!: DialogBox;
   private invUI!: InventoryUI;
   private hud!: Phaser.GameObjects.Graphics;
   private marker!: Phaser.GameObjects.Graphics;
   private returnDoor?: Phaser.GameObjects.Sprite;
+  /** 浆果丛：森林回血点（3 丛，摘完 45 秒长回） */
+  private bushes: BerryBush[] = [];
+  /** 抓走松鼠后，隔一段时间再刷一只回来（可重复抓，计数成就） */
+  private squirrelRespawnAt = 0;
   private phase: Phase = "play";
   private returning = false;
+  /** 森林出生点（松鼠重生用） */
+  private spawnX = 0;
+  private spawnY = 0;
+  /** 命中顿帧进行中（防重入） */
+  private hitStopping = false;
+  /** 当前目标指引 */
+  private questText!: Phaser.GameObjects.Text;
 
   private queuedAttack = false;
   private activeHit: ForestHit | null = null;
@@ -99,6 +112,9 @@ export class ForestScene extends Phaser.Scene {
     this.squirrel = undefined;
     this.ginger = undefined;
     this.pet = undefined;
+    this.bushes = [];
+    this.squirrelRespawnAt = 0;
+    this.hitStopping = false;
     this.gingerDefeated = false;
     this.gingerStunUntil = 0;
     this.gingerHitNextAt = 0;
@@ -109,6 +125,8 @@ export class ForestScene extends Phaser.Scene {
     this.physics.world.setBounds(0, 0, W, H);
 
     const world = this.buildForestMap();
+    this.spawnX = world.spawn.x;
+    this.spawnY = world.spawn.y;
 
     this.cat = new Cat(this, world.spawn.x, world.spawn.y);
     this.physics.add.collider(this.cat.sprite, this.groundLayer);
@@ -117,8 +135,20 @@ export class ForestScene extends Phaser.Scene {
     // 松鼠
     const sx = Phaser.Math.Clamp(world.spawn.x + 150, 96, W - 96);
     const sy = Phaser.Math.Clamp(world.spawn.y + 80, 96, H - 96);
-    this.squirrel = new Squirrel(this, sx, sy);
+    this.squirrel = new Squirrel(this, sx, sy, W, H);
     this.physics.add.collider(this.squirrel.sprite, this.obstacleLayer);
+
+    // 浆果丛：出生点附近 3 丛，森林回血点
+    const bushOffsets = [
+      [110, 50],
+      [-120, 70],
+      [30, -130],
+    ];
+    for (const [ox, oy] of bushOffsets) {
+      const bx = Phaser.Math.Clamp(world.spawn.x + ox, 80, W - 80);
+      const by = Phaser.Math.Clamp(world.spawn.y + oy, 80, H - 80);
+      this.bushes.push(new BerryBush(this, bx, by));
+    }
 
     // 返回门（出生点左侧）
     const dx = Phaser.Math.Clamp(world.spawn.x - 130, 80, W - 80);
@@ -126,6 +156,8 @@ export class ForestScene extends Phaser.Scene {
 
     // 跨关宠物：本局已有宠物 → 这里也生成跟随
     if (runState.hasPet) this.pet = new Pet(this, this.cat.x - 40, this.cat.y);
+    // 黑猫皮肤跨场景延续
+    if (runState.useBlackCat) this.cat.setSkin("black");
 
     this.cameras.main.setBounds(0, 0, W, H);
     this.cameras.main.startFollow(this.cat.sprite, true, 0.1, 0.1);
@@ -136,6 +168,7 @@ export class ForestScene extends Phaser.Scene {
     this.runKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
     this.advanceKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.E);
     this.invKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.B);
+    this.muteKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.M);
 
     this.dialog = new DialogBox(this);
     this.invUI = new InventoryUI(this, runState.inventory, {
@@ -143,6 +176,15 @@ export class ForestScene extends Phaser.Scene {
       onEquipToggle: () => runState.inventory.toggleEquipClaw(),
       onStartHatch: () => this.startHatch(),
       onCollectPet: () => this.collectPet(),
+      skin: {
+        unlocked: () => runState.skinUnlocked,
+        isBlack: () => runState.useBlackCat,
+        onToggle: () => {
+          runState.useBlackCat = !runState.useBlackCat;
+          this.cat.setSkin(runState.useBlackCat ? "black" : "white");
+          playSfx("click");
+        },
+      },
     });
     this.setupInput();
     this.createHud();
@@ -155,7 +197,16 @@ export class ForestScene extends Phaser.Scene {
     if (this.returning) return;
     this.cat.equippedGoldClaw = runState.inventory.equippedClaw; // 爪痕银/金
 
-    if (Phaser.Input.Keyboard.JustDown(this.invKey) && !this.dialog.isActive) this.invUI.toggle();
+    // 背包开关（B）：打开时先取消蓄力（怒气保留），防"背包开着打出飞扑"
+    if (Phaser.Input.Keyboard.JustDown(this.invKey) && !this.dialog.isActive) {
+      if (this.cat.isCharging) this.cat.cancelCharge();
+      playSfx("click");
+      this.invUI.toggle();
+    }
+    // 静音开关（M）
+    if (Phaser.Input.Keyboard.JustDown(this.muteKey)) {
+      this.announce(toggleMute() ? "🔇 已静音（按 M 恢复）" : "🔊 声音开");
+    }
 
     // 对话中：猫站定，等待推进
     if (this.dialog.isActive) {
@@ -167,7 +218,7 @@ export class ForestScene extends Phaser.Scene {
     // 橘猫走来：猫站定看橘猫
     if (this.phase === "ginger") {
       this.cat.update(new Phaser.Math.Vector2(0, 0), false, delta, now);
-      this.updateGingerApproach(now);
+      this.updateGingerApproach();
       this.afterFrame(now);
       return;
     }
@@ -195,11 +246,25 @@ export class ForestScene extends Phaser.Scene {
     }
 
     this.cat.update(dir, wantsToRun, delta, now);
-    if (this.cat.isCharging && !this.isDashHeld()) this.releaseDash(); // 蓄力兜底
+    // 蓄力兜底：背包/对话打开时不补发（打开瞬间已 cancelCharge），防误触打出飞扑
+    if (this.cat.isCharging && !this.isDashHeld() && !this.invUI.isOpen && !this.dialog.isActive)
+      this.releaseDash();
     this.updateHit(now);
     if (this.phase === "play" && this.squirrel) this.squirrel.update(now);
+    // 松鼠被抓走后隔 20 秒回来一只，可重复抓（计数成就）
+    if (this.phase === "won" && !this.squirrel && this.squirrelRespawnAt > 0 && now >= this.squirrelRespawnAt) {
+      this.squirrelRespawnAt = 0;
+      const W = FOREST_COLS * WORLD.tileSize;
+      const H = FOREST_ROWS * WORLD.tileSize;
+      const sx = Phaser.Math.Clamp(this.spawnX + 150, 96, W - 96);
+      const sy = Phaser.Math.Clamp(this.spawnY + 80, 96, H - 96);
+      this.squirrel = new Squirrel(this, sx, sy, W, H);
+      this.physics.add.collider(this.squirrel.sprite, this.obstacleLayer);
+      this.announce("又有一只松鼠溜进了森林…");
+    }
+    for (const b of this.bushes) b.update(now);
     if (this.phase === "battle") {
-      this.updateGingerBattle(now);
+      this.updateGingerBattle(now, delta);
       if (this.cat.stats.health <= 0) {
         this.loseBattle();
         return;
@@ -207,8 +272,12 @@ export class ForestScene extends Phaser.Scene {
     }
     if (this.invUI.isOpen) this.invUI.refresh(now);
 
-    // E：靠近返回门 → 回主世界
-    if (Phaser.Input.Keyboard.JustDown(this.advanceKey) && this.nearReturnDoor()) this.returnToWorld();
+    // E：靠近返回门 → 回主世界（仅非战斗阶段，防战斗中按 E 逃跑）；
+    // 否则试试摘浆果（森林回血）
+    if (Phaser.Input.Keyboard.JustDown(this.advanceKey)) {
+      if ((this.phase === "play" || this.phase === "won") && this.nearReturnDoor()) this.returnToWorld();
+      else this.tryPickBerry();
+    }
 
     this.afterFrame(now);
   }
@@ -220,9 +289,10 @@ export class ForestScene extends Phaser.Scene {
     this.drawMarker(now);
   }
 
-  // ----- 战斗命中（只作用于松鼠） -----
+  // ----- 战斗命中（松鼠 / 橘猫） -----
 
   private spawnHit(spec: AttackSpec, now: number): void {
+    playSfx("swing");
     this.activeHit = {
       damage: Math.round(spec.damage * runState.inventory.damageMult), // 装备金爪 ×1.5
       knockback: spec.knockback,
@@ -273,6 +343,9 @@ export class ForestScene extends Phaser.Scene {
       h.hitGinger = true;
       this.gingerHp -= h.damage;
       this.cat.addRage(h.damage);
+      playSfx("hit");
+      this.hitStop(50); // 命中顿帧
+      if (h.follow) this.cameras.main.shake(90, 0.004);
       g.setTintFill(0xffffff);
       this.time.delayedCall(80, () => {
         if (!this.gingerDefeated) g.clearTint();
@@ -280,23 +353,40 @@ export class ForestScene extends Phaser.Scene {
       const kx = g.x - this.cat.x;
       const ky = g.y - this.cat.y;
       const kd = Math.hypot(kx, ky) || 1;
-      const power = h.follow ? 11 : 6; // 飞扑击退更远
+      const power = h.follow ? 11 : 6; // 飞扑击退更远（帧步进，见 updateGingerBattle 的 delta 换算）
       this.gingerKb.set((kx / kd) * power, (ky / kd) * power);
+      g.setVelocity(0, 0); // 被击中先停下，击退由 gingerKb 逐帧积分
       this.gingerStunUntil = now + h.stunMs;
       if (this.gingerHp <= 0) this.winBattle();
     }
   }
 
+  /** 命中顿帧：暂停整个场景 ms 毫秒（物理/tween/计时全冻），打击感的主要来源。 */
+  private hitStop(ms: number): void {
+    if (this.hitStopping) return;
+    this.hitStopping = true;
+    this.scene.pause();
+    setTimeout(() => {
+      this.scene.resume();
+      this.hitStopping = false;
+    }, ms);
+  }
+
   private pressDash(): void {
     const now = this.time.now;
     const spec = this.cat.tryInstantDash(now);
-    if (spec) this.spawnHit(spec, now);
-    else this.cat.beginCharge(now);
+    if (spec) {
+      playSfx("dash");
+      this.spawnHit(spec, now);
+    } else this.cat.beginCharge(now);
   }
 
   private releaseDash(): void {
     const spec = this.cat.releaseCharge(this.time.now);
-    if (spec) this.spawnHit(spec, this.time.now);
+    if (spec) {
+      playSfx("dash");
+      this.spawnHit(spec, this.time.now);
+    }
   }
 
   private isDashHeld(): boolean {
@@ -311,28 +401,38 @@ export class ForestScene extends Phaser.Scene {
     if (this.phase !== "play" || !this.squirrel) return;
     this.squirrel.setCaught(this);
     this.activeHit = null;
+    // 抓松鼠计数成就
+    runState.squirrelsCaught++;
+    const n = runState.squirrelsCaught;
+    if (n === 1) this.announce("🎉 第一次抓住松鼠！");
+    else if (n === 3) this.announce("🎉 抓到第 3 只松鼠了！");
+    else if (n === 5) this.announce("🎉 第 5 只！你是抓松鼠大师！");
     this.phase = "ginger";
     const W = FOREST_COLS * WORLD.tileSize;
     const H = FOREST_ROWS * WORLD.tileSize;
     const gx = Phaser.Math.Clamp(this.cat.x + 240, 80, W - 80);
     const gy = Phaser.Math.Clamp(this.cat.y - 140, 80, H - 80);
-    this.ginger = this.add.sprite(gx, gy, "cat-ginger").setDepth(9);
+    // 橘猫用物理体 + 速度移动（带障碍碰撞，不再穿墙；速度按秒算，不随帧率变）
+    this.ginger = this.physics.add.sprite(gx, gy, "cat-ginger").setDepth(9);
+    this.ginger.setCollideWorldBounds(true);
+    this.physics.add.collider(this.ginger, this.obstacleLayer);
+    this.physics.add.collider(this.ginger, this.cat.sprite);
     this.ginger.play("cat-ginger-walk-left");
-    this.announce("你抓住了松鼠！一只橘猫正朝你走来…");
+    if (n <= 1) this.announce("你抓住了松鼠！一只橘猫正朝你走来…");
   }
 
-  private updateGingerApproach(_now: number): void {
+  private updateGingerApproach(): void {
     const g = this.ginger;
     if (!g) return;
     const dx = this.cat.x - g.x;
     const dy = this.cat.y - g.y;
     const d = Math.hypot(dx, dy);
     if (d > 74) {
-      const speed = 1.6;
-      g.x += (dx / d) * speed;
-      g.y += (dy / d) * speed;
+      const speed = 96; // px/秒（原 1.6/帧 @60fps）
+      g.setVelocity((dx / d) * speed, (dy / d) * speed);
       g.play(`cat-ginger-walk-${this.facingOf(dx, dy)}`, true);
     } else {
+      g.setVelocity(0, 0);
       g.play(`cat-ginger-idle-${this.facingOf(dx, dy)}`, true);
       this.phase = "dialog";
       this.dialog.show("橘猫", GINGER_LINES, () => this.startGingerBattle());
@@ -356,26 +456,30 @@ export class ForestScene extends Phaser.Scene {
     this.announce("橘猫切磋开始！左键爪击 / 右键蓄力飞扑，打败它！");
   }
 
-  /** 战斗中橘猫 AI：被击退时滑行衰减，否则追猫并接触造成伤害。 */
-  private updateGingerBattle(now: number): void {
+  /** 战斗中橘猫 AI：被击退时滑行衰减，否则追猫并接触造成伤害（速度按秒算）。 */
+  private updateGingerBattle(now: number, delta: number): void {
     const g = this.ginger;
     if (!g || this.gingerDefeated) return;
+    const dtScale = delta / 16.667; // 把原来的"每帧"步进换算成 delta 步进
     if (now < this.gingerStunUntil) {
-      g.x += this.gingerKb.x;
-      g.y += this.gingerKb.y;
-      this.gingerKb.scale(0.85);
+      // 击退滑行：gingerKb 存的是"每帧位移"，按 delta 积分并衰减
+      g.x += this.gingerKb.x * dtScale;
+      g.y += this.gingerKb.y * dtScale;
+      this.gingerKb.scale(Math.pow(0.85, dtScale));
     } else {
       const dx = this.cat.x - g.x;
       const dy = this.cat.y - g.y;
       const d = Math.hypot(dx, dy) || 1;
       if (d > GINGER_CONTACT_RANGE) {
-        g.x += (dx / d) * GINGER_SPEED;
-        g.y += (dy / d) * GINGER_SPEED;
+        const speed = 96; // px/秒（原 GINGER_SPEED 1.6/帧 @60fps）
+        g.setVelocity((dx / d) * speed, (dy / d) * speed);
         g.play(`cat-ginger-walk-${this.facingOf(dx, dy)}`, true);
       } else {
+        g.setVelocity(0, 0);
         g.play(`cat-ginger-idle-${this.facingOf(dx, dy)}`, true);
         if (now >= this.gingerHitNextAt && this.cat.tryTakeDamage(GINGER_CONTACT_DMG, now)) {
           this.gingerHitNextAt = now + 650;
+          playSfx("hurt");
         }
       }
     }
@@ -401,6 +505,7 @@ export class ForestScene extends Phaser.Scene {
     this.gingerHpBar.clear();
     const g = this.ginger;
     if (g) {
+      g.setVelocity(0, 0);
       this.tweens.add({
         targets: g,
         alpha: 0,
@@ -410,13 +515,26 @@ export class ForestScene extends Phaser.Scene {
         onComplete: () => g.destroy(),
       });
     }
-    this.announce("你赢了！橘猫认可地点了点头，消失在树影里。");
+    // 胜利结算：不再是"一句 announce 就结束"——给对话收尾 + 实质奖励
+    this.dialog.show(
+      "橘子",
+      ["好身手！是我小看你了。", "这片森林认你这个朋友了。拿去吧——森林的谢礼！", "（你的生命上限提高了，以后常来玩呀）"],
+      () => {
+        this.cat.stats.maxHealth += 20;
+        this.cat.stats.health = this.cat.stats.maxHealth;
+        playSfx("win");
+        this.announce("🎉 打败了橘猫！生命上限 +20，森林永远欢迎你");
+        // 20 秒后回来一只新松鼠，还能再抓（计数成就）
+        this.squirrelRespawnAt = this.time.now + 20000;
+      }
+    );
   }
 
   private loseBattle(): void {
     if (this.returning) return;
     this.returning = true;
     this.gingerHpBar.clear();
+    playSfx("lose");
     this.cat.sprite.setVelocity(0, 0);
     this.physics.pause();
     this.announce("你被橘猫击败了…撤回主世界");
@@ -443,6 +561,37 @@ export class ForestScene extends Phaser.Scene {
     this.pet = new Pet(this, this.cat.x - 40, this.cat.y);
     runState.incubatorEndsAt = null;
     runState.hasPet = true;
+  }
+
+  // ----- 浆果丛（森林回血） -----
+
+  /** 摘最近的可摘浆果丛：+15 血 + 飘字 + 音效。成功返回 true。 */
+  private tryPickBerry(): boolean {
+    const now = this.time.now;
+    for (const b of this.bushes) {
+      if (!b.inRange(this.cat.x, this.cat.y)) continue;
+      if (!b.tryPick(now)) continue;
+      this.cat.heal(BerryBush.HEAL);
+      playSfx("berry");
+      this.pet?.happy();
+      const txt = this.add
+        .text(this.cat.x, this.cat.y - 44, `+${BerryBush.HEAL}`, {
+          fontSize: "18px",
+          color: "#06d6a0",
+          fontStyle: "bold",
+        })
+        .setOrigin(0.5)
+        .setDepth(70);
+      this.tweens.add({
+        targets: txt,
+        y: txt.y - 26,
+        alpha: 0,
+        duration: 700,
+        onComplete: () => txt.destroy(),
+      });
+      return true;
+    }
+    return false;
   }
 
   // ----- 返回门 -----
@@ -503,12 +652,40 @@ export class ForestScene extends Phaser.Scene {
     this.marker = this.add.graphics().setDepth(55);
     this.gingerHpBar = this.add.graphics().setDepth(40);
     this.add
-      .text(16, 12, "森林 · WASD 移动 · 左键 爪击 · 右键 蓄力飞扑(从松鼠上方扑可抓住它) · B 背包 · 门前 E 回去", {
+      .text(16, 12, "森林 · WASD 移动 · 左键 爪击 · 右键 蓄力飞扑(从松鼠上方扑可抓住它) · E 摘浆果 · B 背包 · M 静音", {
         fontSize: "13px",
         color: "#ffffff",
       })
       .setScrollFactor(0)
       .setDepth(100);
+    // 当前目标指引
+    this.questText = this.add
+      .text(16, 94, "", {
+        fontSize: "13px",
+        color: "#ffe066",
+        fontStyle: "bold",
+        backgroundColor: "#00000066",
+        padding: { x: 8, y: 4 },
+      })
+      .setScrollFactor(0)
+      .setDepth(100);
+  }
+
+  /** 按当前进度给出一句话目标（HUD 第二行）。 */
+  private getQuestText(): string {
+    switch (this.phase) {
+      case "play":
+        return this.squirrel
+          ? "🎯 从松鼠上方用右键飞扑抓住它！（浆果丛可回血）"
+          : `🎯 已抓住 ${runState.squirrelsCaught} 只松鼠，门在出生点旁可回主世界`;
+      case "ginger":
+      case "dialog":
+        return "🎯 听听橘猫想说什么…";
+      case "battle":
+        return "🎯 打败橘猫！小心它的冲撞（血条在它头顶）";
+      case "won":
+        return "🎯 你赢了！出生点旁的门可以回主世界，松鼠还会再来";
+    }
   }
 
   private updateHud(): void {
@@ -522,14 +699,22 @@ export class ForestScene extends Phaser.Scene {
     const rr = rage / maxRage;
     this.hud.fillStyle(0x000000, 0.4).fillRect(16, 72, w, 14);
     this.hud.fillStyle(rr >= 1 ? 0x06d6a0 : 0xfb8500, 1).fillRect(16, 72, w * rr, 14);
+    this.questText.setText(this.getQuestText());
   }
 
-  /** 返回门在范围内时画青色提示环。 */
+  /** 返回门/浆果丛在范围内时画提示环。 */
   private drawMarker(now: number): void {
     this.marker.clear();
+    const pulse = 0.6 + 0.4 * Math.sin(now / 120);
     if (this.returnDoor && !this.dialog.isActive && this.nearReturnDoor()) {
-      const pulse = 0.6 + 0.4 * Math.sin(now / 120);
       this.marker.lineStyle(3, 0x66e0ff, pulse).strokeCircle(this.returnDoor.x, this.returnDoor.y, 30);
+    }
+    // 可摘的浆果丛画绿环
+    if (!this.dialog.isActive) {
+      for (const b of this.bushes) {
+        if (b.inRange(this.cat.x, this.cat.y))
+          this.marker.lineStyle(2, 0x7CFC00, pulse).strokeCircle(b.x, b.y, 26);
+      }
     }
   }
 

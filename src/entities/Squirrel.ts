@@ -18,13 +18,18 @@ export class Squirrel {
   private fleeUntil = 0;
   private readonly fleeDir = new Phaser.Math.Vector2();
   private caught = false;
+  /** 世界边界（可选）：flee() 挪窝时把新窝 clamp 到界内，避免设进墙/水里 */
+  private readonly boundW?: number;
+  private readonly boundH?: number;
 
-  constructor(scene: Phaser.Scene, x: number, y: number) {
+  constructor(scene: Phaser.Scene, x: number, y: number, boundW?: number, boundH?: number) {
     this.sprite = scene.physics.add.sprite(x, y, "squirrel");
     this.sprite.setCollideWorldBounds(true).setSize(16, 14).setOffset(16, 24).setDepth(8);
     this.sprite.play("squirrel-idle");
     this.home.set(x, y);
     this.target.set(x, y);
+    this.boundW = boundW;
+    this.boundH = boundH;
   }
 
   get x(): number {
@@ -79,6 +84,11 @@ export class Squirrel {
     this.fleeDir.set(dx / d, dy / d);
     this.fleeUntil = now + FLEE_MS;
     this.home.set(this.x + this.fleeDir.x * 120, this.y + this.fleeDir.y * 120); // 新窝在逃跑方向
+    if (this.boundW !== undefined && this.boundH !== undefined) {
+      // 新窝 clamp 到世界边界内，防止挪进墙外/水里（不传参时行为不变）
+      this.home.x = Phaser.Math.Clamp(this.home.x, 40, this.boundW - 40);
+      this.home.y = Phaser.Math.Clamp(this.home.y, 40, this.boundH - 40);
+    }
     this.wanderUntil = 0;
   }
 

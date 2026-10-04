@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { HARD_STUN_MS } from "../core/Combat";
 
 /**
  * 绿色恐龙：远程喷火怪。保持与猫一定距离，周期性「蓄势 → 喷火」。
@@ -15,6 +16,8 @@ const FIRE_COOLDOWN = 2600;
 const TELEGRAPH_MS = 520; // 喷火前摇（泛红预警）
 const BREATHE_MS = 1000; // 喷火持续
 const FLAME_LEN = 82; // 火舌长度（缩短一半，靠扫动覆盖范围）
+/** 进入喷火前摇的最远距离：火舌长度 + 命中宽容。远于此距离时先靠近，不"空喷" */
+const FLAME_COMMIT_DIST = FLAME_LEN + 24;
 const FLAME_HALF_ANGLE = 0.42; // 瞬时火舌半张角（弧度，约 24°）
 const FLAME_SWEEP = Math.PI / 4; // 扫动幅度 ±45° → 覆盖约 90°
 const FLAME_SWEEP_PERIOD = 420; // 扫动一个来回的毫秒
@@ -84,10 +87,14 @@ export class Dino {
       switch (this.state) {
         case "approach": {
           if (d < AGGRO_RANGE) {
-            if (d > PREFERRED_DIST + 30) this.sprite.setVelocity((dx / d) * MOVE_SPEED, (dy / d) * MOVE_SPEED);
+            if (d < FIRE_RANGE && now >= this.nextFireAt && d > FLAME_COMMIT_DIST) {
+              // 冷却好了但距离太远喷不中：无视"保持距离"死区，直接朝猫拉近到火舌射程内
+              this.sprite.setVelocity((dx / d) * MOVE_SPEED, (dy / d) * MOVE_SPEED);
+            } else if (d > PREFERRED_DIST + 30) this.sprite.setVelocity((dx / d) * MOVE_SPEED, (dy / d) * MOVE_SPEED);
             else if (d < PREFERRED_DIST - 30) this.sprite.setVelocity((-dx / d) * MOVE_SPEED, (-dy / d) * MOVE_SPEED);
             else this.sprite.setVelocity(0, 0);
-            if (d < FIRE_RANGE && now >= this.nextFireAt) {
+            // 只有火舌够得着才进入前摇，否则继续靠近——避免站在火舌外"空喷"
+            if (d < FIRE_RANGE && now >= this.nextFireAt && d <= FLAME_COMMIT_DIST) {
               this.state = "telegraph";
               this.stateUntil = now + TELEGRAPH_MS;
               this.sprite.setVelocity(0, 0);
@@ -168,8 +175,9 @@ export class Dino {
   }
 
   /**
-   * 受击。只有"硬僵直"（stunMs >= 1000，即短距/右键飞扑）才会打断正在进行的喷火并击退/僵直；
-   * 普通眩晕（stunMs < 1000，普通爪击）在喷火期间只掉血，不打断、不击退、不僵直。
+   * 受击。只有"硬僵直"（stunMs >= HARD_STUN_MS，即短距/右键飞扑）才会打断正在进行的
+   * 喷火（前摇 telegraph 同样可被硬僵直打断）并击退/僵直；
+   * 普通爪击（stunMs < HARD_STUN_MS）在喷火/前摇期间只掉血，不打断、不击退、不僵直。
    * 未喷火时任何命中都正常击退 + 僵直。
    */
   takeDamage(amount: number, knockbackX: number, knockbackY: number, now: number, stunMs = 220): void {
@@ -179,17 +187,18 @@ export class Dino {
     this.scene.time.delayedCall(80, () => {
       if (!this.dead) this.sprite.clearTint();
     });
-    const breathing = this.state === "breathe";
-    const canInterrupt = stunMs >= 1000; // 眩晕 1 秒及以上才打断喷火
-    if (breathing && !canInterrupt) {
-      // 喷火中被普通爪击：照常掉血，但火不灭、不被推、不僵直
+    const active = this.state === "breathe" || this.state === "telegraph"; // 喷火中或前摇中
+    const canInterrupt = stunMs >= HARD_STUN_MS; // 硬僵直才打断
+    if (active && !canInterrupt) {
+      // 喷火/前摇中被普通爪击：照常掉血，但火不灭、不被推、不僵直
     } else {
       this.sprite.setVelocity(knockbackX, knockbackY);
       this.stunUntil = now + stunMs;
-      if (breathing) {
+      if (active) {
         this.endBreathe();
         this.state = "approach";
         this.nextFireAt = now + 800;
+        this.sprite.clearTint(); // 前摇的泛红预警也要清掉，避免僵直中还红着
       }
     }
     if (this.health <= 0) this.die();

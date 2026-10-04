@@ -14,10 +14,16 @@ export interface InventoryUIHooks {
   onEquipToggle: () => void;
   onStartHatch: () => void;
   onCollectPet: () => void;
+  /** 黑猫皮肤换装（可选；未解锁时 UI 显示"未解锁"） */
+  skin?: {
+    unlocked: () => boolean;
+    isBlack: () => boolean;
+    onToggle: () => void;
+  };
 }
 
 const PANEL_W = 460;
-const PANEL_H = 340;
+const PANEL_H = 384;
 
 /**
  * 背包界面（按 B 开关）。固定在屏幕中央，显示物品/金爪装备/孵化器。
@@ -33,6 +39,8 @@ export class InventoryUI {
 
   private countTexts: Phaser.GameObjects.Text[] = [];
   private equipBtn!: Phaser.GameObjects.Text;
+  private skinText!: Phaser.GameObjects.Text;
+  private skinBtn!: Phaser.GameObjects.Text;
   private hatchStatus!: Phaser.GameObjects.Text;
   private hatchBtn!: Phaser.GameObjects.Text;
   private hatchAction: (() => void) | null = null;
@@ -121,8 +129,33 @@ export class InventoryUI {
       }
     });
 
+    // 换装行（黑猫皮肤：宝箱解锁后可切换）
+    const skinY = rowY0 + 3 * 46;
+    this.add(s.add.text(left + 40, skinY, "🐱", { fontSize: "22px" }).setOrigin(0.5));
+    this.skinText = this.add(
+      s.add.text(left + 70, skinY - 8, "", { fontSize: "15px", color: "#ffffff", fontStyle: "bold" }).setOrigin(0, 0.5)
+    );
+    this.add(
+      s.add
+        .text(left + 70, skinY + 10, "主世界宝箱解锁黑猫皮肤", { fontSize: "11px", color: "#aaaaaa" })
+        .setOrigin(0, 0.5)
+    );
+    this.skinBtn = this.add(
+      s.add
+        .text(left + PANEL_W - 24, skinY, "", { fontSize: "14px", color: "#06d6a0", fontStyle: "bold" })
+        .setOrigin(1, 0.5)
+    );
+    this.skinBtn.on("pointerover", () => {
+      if (this.hooks.skin?.unlocked()) this.skinBtn.setColor("#9bf6d6");
+    });
+    this.skinBtn.on("pointerout", () => this.skinBtn.setColor("#06d6a0"));
+    this.skinBtn.on("pointerdown", () => {
+      this.hooks.skin?.onToggle();
+      this.refresh(s.time.now);
+    });
+
     // 分割线 + 孵化器
-    const incY = rowY0 + 3 * 46 + 6;
+    const incY = rowY0 + 4 * 46 + 6;
     const lg = s.add.graphics();
     lg.lineStyle(1, 0x554f63, 1).lineBetween(left + 20, incY - 8, left + PANEL_W - 20, incY - 8);
     this.add(lg);
@@ -161,6 +194,16 @@ export class InventoryUI {
       this.equipBtn.disableInteractive();
     }
     if (this.inv.counts["golden-claw"] > 0) this.refreshEquipColor();
+
+    // 换装行
+    if (this.hooks.skin?.unlocked()) {
+      this.skinText.setText(`黑猫皮肤  ${this.hooks.skin.isBlack() ? "（使用中）" : ""}`);
+      this.skinBtn.setText(this.hooks.skin.isBlack() ? "[换回白猫]" : "[换上黑猫]");
+      this.skinBtn.setInteractive({ useHandCursor: true }).setColor("#06d6a0");
+    } else {
+      this.skinText.setText("黑猫皮肤");
+      this.skinBtn.setText("(未解锁)").setColor("#777777").disableInteractive();
+    }
 
     // 孵化器
     const h = this.hooks.getHatch(now);

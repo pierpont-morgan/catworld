@@ -27,6 +27,15 @@ export const SHEETS: SheetSpec[] = [
   { key: "cat", frameWidth: 64, frameHeight: 64, file: "/assets/cat.png" },
   // 橘猫（第二关 NPC/敌人，CC0 橘猫表，与白猫同布局）
   { key: "cat-ginger", frameWidth: 64, frameHeight: 64, file: "/assets/cat-ginger.png" },
+  // 黑猫皮肤（宝箱奖励，与白猫同版式同帧布局，动画 key 前缀 catb-）。
+  // 注：二进制资源走 API 推不进仓库，暂时引用仓库内已有的原图 raw URL；
+  // 日后用 git 正常提交 public/assets/cat-black.png 后可改回 "/assets/cat-black.png"。
+  {
+    key: "cat-black",
+    frameWidth: 64,
+    frameHeight: 64,
+    file: "https://raw.githubusercontent.com/pierpont-morgan/catworld/main/src/assets/cat/cat%201%20(64%D1%8564).png",
+  },
   { key: "squirrel", frameWidth: 48, frameHeight: 48 }, // 森林松鼠（程序化）
   { key: "slime", frameWidth: 48, frameHeight: 48 },
   // 史莱姆配色变体（程序化，同帧布局换色，见 art/pixelart.ts 的 SLIME_PALETTES）
@@ -79,14 +88,46 @@ const ATTACK2_UP = ATTACK_UP; // 背面仅一行，沿用
 const ATTACK2_LEFT = [462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472]; // 行33 Right paw swipe (left)
 const ATTACK2_RIGHT = [490, 491, 492, 493, 494, 495, 496, 497, 498, 499, 500]; // 行35 Right paw swipe (right)
 
-/** 生成某方向的 idle/walk/run + 两段挥爪(左爪/右爪)动画 */
-function dirAnims(dir: string, walk: number[], run: number[], attack: number[], attack2: number[]): AnimSpec[] {
+/** 生成某方向的 idle/walk/run + 两段挥爪(左爪/右爪)动画；prefix/texture 供黑猫皮肤复用同一套帧号 */
+function dirAnims(
+  prefix: string,
+  texture: string,
+  dir: string,
+  walk: number[],
+  run: number[],
+  attack: number[],
+  attack2: number[]
+): AnimSpec[] {
   return [
-    { key: `cat-idle-${dir}`, texture: "cat", frames: [walk[0]], frameRate: 2, repeat: -1 },
-    { key: `cat-walk-${dir}`, texture: "cat", frames: walk, frameRate: 9, repeat: -1 },
-    { key: `cat-run-${dir}`, texture: "cat", frames: run, frameRate: 12, repeat: -1 },
-    { key: `cat-attack-${dir}`, texture: "cat", frames: attack, frameRate: 30, repeat: 0 },
-    { key: `cat-attack2-${dir}`, texture: "cat", frames: attack2, frameRate: 30, repeat: 0 },
+    { key: `${prefix}-idle-${dir}`, texture, frames: [walk[0]], frameRate: 2, repeat: -1 },
+    { key: `${prefix}-walk-${dir}`, texture, frames: walk, frameRate: 9, repeat: -1 },
+    { key: `${prefix}-run-${dir}`, texture, frames: run, frameRate: 12, repeat: -1 },
+    { key: `${prefix}-attack-${dir}`, texture, frames: attack, frameRate: 30, repeat: 0 },
+    { key: `${prefix}-attack2-${dir}`, texture, frames: attack2, frameRate: 30, repeat: 0 },
+  ];
+}
+
+/** 猫咪全套动画（含跳/吃/蓄力）：白猫 prefix=cat/texture=cat，黑猫 prefix=catb/texture=cat-black */
+function catAnims(prefix: string, texture: string): AnimSpec[] {
+  return [
+    ...dirAnims(prefix, texture, "down", WALK_DOWN, RUN_DOWN, ATTACK_DOWN, ATTACK2_DOWN),
+    ...dirAnims(prefix, texture, "up", WALK_UP, RUN_UP, ATTACK_UP, ATTACK2_UP),
+    ...dirAnims(prefix, texture, "left", WALK_LEFT, RUN_LEFT, ATTACK_LEFT, ATTACK2_LEFT),
+    ...dirAnims(prefix, texture, "right", WALK_RIGHT, RUN_RIGHT, ATTACK_RIGHT, ATTACK2_RIGHT),
+    // 右键冲刺飞扑（朝下无图，由 Cat 沿用 attack-down）
+    { key: `${prefix}-jump-up`, texture, frames: JUMP_UP, frameRate: 12, repeat: 0 },
+    { key: `${prefix}-jump-left`, texture, frames: JUMP_LEFT, frameRate: 14, repeat: 0 },
+    { key: `${prefix}-jump-right`, texture, frames: JUMP_RIGHT, frameRate: 14, repeat: 0 },
+    // 吃鱼动画（四方向，播一次）
+    { key: `${prefix}-eat-down`, texture, frames: EAT_DOWN, frameRate: 12, repeat: 0 },
+    { key: `${prefix}-eat-up`, texture, frames: EAT_UP, frameRate: 12, repeat: 0 },
+    { key: `${prefix}-eat-left`, texture, frames: EAT_LEFT, frameRate: 12, repeat: 0 },
+    { key: `${prefix}-eat-right`, texture, frames: EAT_RIGHT, frameRate: 12, repeat: 0 },
+    // 蓄力动画（四方向，循环；按住右键/Y 时播放）
+    { key: `${prefix}-charge-down`, texture, frames: CHARGE_DOWN, frameRate: 8, repeat: -1 },
+    { key: `${prefix}-charge-up`, texture, frames: CHARGE_UP, frameRate: 8, repeat: -1 },
+    { key: `${prefix}-charge-left`, texture, frames: CHARGE_LEFT, frameRate: 10, repeat: -1 },
+    { key: `${prefix}-charge-right`, texture, frames: CHARGE_RIGHT, frameRate: 10, repeat: -1 },
   ];
 }
 
@@ -100,24 +141,8 @@ function gingerAnims(dir: string, walk: number[], attack: number[]): AnimSpec[] 
 }
 
 export const ANIMS: AnimSpec[] = [
-  ...dirAnims("down", WALK_DOWN, RUN_DOWN, ATTACK_DOWN, ATTACK2_DOWN),
-  ...dirAnims("up", WALK_UP, RUN_UP, ATTACK_UP, ATTACK2_UP),
-  ...dirAnims("left", WALK_LEFT, RUN_LEFT, ATTACK_LEFT, ATTACK2_LEFT),
-  ...dirAnims("right", WALK_RIGHT, RUN_RIGHT, ATTACK_RIGHT, ATTACK2_RIGHT),
-  // 右键冲刺飞扑（朝下无图，由 Cat 沿用 cat-attack-down）
-  { key: "cat-jump-up", texture: "cat", frames: JUMP_UP, frameRate: 12, repeat: 0 },
-  { key: "cat-jump-left", texture: "cat", frames: JUMP_LEFT, frameRate: 14, repeat: 0 },
-  { key: "cat-jump-right", texture: "cat", frames: JUMP_RIGHT, frameRate: 14, repeat: 0 },
-  // 吃鱼动画（四方向，播一次）
-  { key: "cat-eat-down", texture: "cat", frames: EAT_DOWN, frameRate: 12, repeat: 0 },
-  { key: "cat-eat-up", texture: "cat", frames: EAT_UP, frameRate: 12, repeat: 0 },
-  { key: "cat-eat-left", texture: "cat", frames: EAT_LEFT, frameRate: 12, repeat: 0 },
-  { key: "cat-eat-right", texture: "cat", frames: EAT_RIGHT, frameRate: 12, repeat: 0 },
-  // 蓄力动画（四方向，循环；按住右键/Y 时播放）
-  { key: "cat-charge-down", texture: "cat", frames: CHARGE_DOWN, frameRate: 8, repeat: -1 },
-  { key: "cat-charge-up", texture: "cat", frames: CHARGE_UP, frameRate: 8, repeat: -1 },
-  { key: "cat-charge-left", texture: "cat", frames: CHARGE_LEFT, frameRate: 10, repeat: -1 },
-  { key: "cat-charge-right", texture: "cat", frames: CHARGE_RIGHT, frameRate: 10, repeat: -1 },
+  ...catAnims("cat", "cat"), // 白猫（默认皮肤）
+  ...catAnims("catb", "cat-black"), // 黑猫皮肤（宝箱奖励，同帧布局）,
   // 敌人史莱姆（紫/绿/红/大型紫王/金，帧布局相同只换纹理）
   { key: "slime-idle", texture: "slime", frames: [0, 1], frameRate: 3, repeat: -1 },
   { key: "slime-green-idle", texture: "slime-green", frames: [0, 1], frameRate: 3, repeat: -1 },

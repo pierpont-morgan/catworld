@@ -718,6 +718,77 @@ function buildDoor(scene: Phaser.Scene): void {
   g.destroy();
 }
 
+// ---------------- 宝箱（64px，金钥匙开它换黑猫皮肤）----------------
+
+const CHEST_PAL: Palette = {
+  O: 0x3a2410, // 轮廓
+  W: 0x8a5a28, // 木板
+  L: 0xa86e34, // 木板亮
+  G: 0xffd23f, // 金边/锁
+  D: 0x5a3a18, // 暗部
+};
+const CHEST_GRID = [
+  "................",
+  ".....OOOOOO.....",
+  "...OOWWWWWWO....",
+  "..OWWWWWWWWWWO..",
+  "..OWWLLWWWWWO...",
+  "..OWWWWWWWWO....",
+  "...OOOOOOOOO....",
+  "...OWWWWWWWWO...",
+  "...OWWDGGDWWWO..",
+  "...OWWDGGDWWWO..",
+  "...OWWWGGGWWWO..",
+  "...OWWWWWWWWO...",
+  "...OWWDWWWDWO...",
+  "...OWWWWWWWWO...",
+  "....OOOOOOOO....",
+  "................",
+];
+
+function buildChest(scene: Phaser.Scene): void {
+  if (scene.textures.exists("chest")) return;
+  const g = scene.add.graphics();
+  paintGrid(g, 0, 4, CHEST_GRID, CHEST_PAL);
+  g.generateTexture("chest", 64, 64);
+  g.destroy();
+}
+
+// ---------------- 浆果丛（48px，森林回血点；没果子时场景里 tint 变灰）----------------
+
+const BUSH_PAL: Palette = {
+  O: 0x1d4a1d, // 轮廓
+  G: 0x2e7d32, // 叶
+  L: 0x4caf50, // 叶亮
+  R: 0xe0455a, // 浆果
+};
+const BUSH_GRID = [
+  "................",
+  ".....OOOOOO.....",
+  "...OOGGGGGGOO...",
+  "..OGGLGGGGLGGO..",
+  ".OGGGLRGGRGLGGO.",
+  ".OGGLRRRRRGLGGO.",
+  "OGGGLRRRRRGLGGGO",
+  "OGGGLGRRRGLGGGGO",
+  "OGGGGLRRGLLGGGGO",
+  ".OGGGGLLGLGGGGO.",
+  ".OGGGGGGGGGGGGO.",
+  "..OGGGGGGGGGGO..",
+  "...OOGGGGGGOO...",
+  ".....OOOOOO.....",
+  ".......OO.......",
+  "................",
+];
+
+function buildBush(scene: Phaser.Scene): void {
+  if (scene.textures.exists("bush")) return;
+  const g = scene.add.graphics();
+  paintGrid(g, 0, 3, BUSH_GRID, BUSH_PAL);
+  g.generateTexture("bush", 48, 48);
+  g.destroy();
+}
+
 // ---------------- 森林松鼠（48px，棕色大尾巴坐姿，2 帧轻摆）----------------
 
 const SQ_PX = 3;
@@ -797,18 +868,6 @@ function buildClawFx(scene: Phaser.Scene): void {
   g.destroy();
 }
 
-// ---------------- 挥击特效（保持矢量弧线，足够用）----------------
-
-function buildSlash(scene: Phaser.Scene): void {
-  const g = scene.add.graphics();
-  g.lineStyle(9, 0xffffff, 0.95);
-  g.beginPath();
-  g.arc(32, 32, 22, Phaser.Math.DegToRad(-70), Phaser.Math.DegToRad(70), false);
-  g.strokePath();
-  g.generateTexture("slash", 64, 64);
-  g.destroy();
-}
-
 /** 生成全部程序化贴图。已从真实素材加载的 key 会跳过，不覆盖。 */
 export function generatePixelArt(scene: Phaser.Scene): void {
   if (!scene.textures.exists("tiles")) buildTiles(scene);
@@ -821,7 +880,8 @@ export function generatePixelArt(scene: Phaser.Scene): void {
   buildClawFx(scene); // 爪痕特效（银/金）
   buildSquirrel(scene); // 森林松鼠
   buildDoor(scene); // 传送门
-  if (!scene.textures.exists("slash")) buildSlash(scene);
+  buildChest(scene); // 宝箱（金钥匙奖励）
+  buildBush(scene); // 浆果丛（森林回血）
 }
 
 /** 帧尺寸常量，供实体设置物理体时参考 */
