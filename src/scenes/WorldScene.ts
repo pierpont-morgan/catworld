@@ -11,6 +11,7 @@ import { AttackSpec } from "../core/Combat";
 import { Inventory, ItemId, ITEM_DEFS } from "../core/Inventory";
 import { runState } from "../core/RunState";
 import { EMPTY, TILE, generateWorld, GeneratedWorld } from "../core/worldgen";
+import { playSfx, toggleMute } from "../audio/sfx";
 
 /** 左摇杆死区，过滤手柄静止时的微小漂移 */
 const GAMEPAD_DEADZONE = 0.15;
@@ -117,6 +118,9 @@ export class WorldScene extends Phaser.Scene {
   private goldSpawned = false;
   /** 捡到金钥匙后出现的传送门（通往森林第二关） */
   private door?: Phaser.GameObjects.Sprite;
+  /** 出生点旁的宝箱：金钥匙开它，解锁黑猫皮肤（只出现一次） */
+  private chest?: Phaser.GameObjects.Sprite;
+  private chestOpened = false;
   /** 正在过场进入森林：冻结主世界 */
   private enteringForest = false;
   private groundLayer!: Phaser.Tilemaps.TilemapLayer;
@@ -125,6 +129,11 @@ export class WorldScene extends Phaser.Scene {
   private wasd!: Record<"W" | "A" | "S" | "D", Phaser.Input.Keyboard.Key>;
   private runKey!: Phaser.Input.Keyboard.Key;
   private eatKey!: Phaser.Input.Keyboard.Key;
+  private muteKey!: Phaser.Input.Keyboard.Key;
+  /** 命中顿帧进行中（防重入） */
+  private hitStopping = false;
+  /** 当前目标指引（HUD 第二行，孩子能看懂的一句话目标） */
+  private questText!: Phaser.GameObjects.Text;
 
   /** 本帧待执行的爪击意图（由鼠标左键/手柄X事件写入，update 消费）。飞扑改为蓄力，按下/松开直接走 Cat。 */
   private queuedAttack: "claw" | null = null;
@@ -160,6 +169,8 @@ export class WorldScene extends Phaser.Scene {
     this.dinoLootDropped = false;
     this.goldSpawned = false;
     this.door = undefined;
+    this.chest = undefined;
+    this.chestOpened = false;
     this.enteringForest = false;
     this.queuedAttack = null;
     this.queuedEat = false;
@@ -199,22 +210,43 @@ export class WorldScene extends Phaser.Scene {
       onEquipToggle: () => this.inventory.toggleEquipClaw(),
       onStartHatch: () => this.startHatch(),
       onCollectPet: () => this.collectPet(),
+      skin: {
+        unlocked: () => runState.skinUnlocked,
+        isBlack: () => runState.useBlackCat,
+        onToggle: () => {
+          runState.useBlackCat = !runState.useBlackCat;
+          this.cat.setSkin(runState.useBlackCat ? "black" : "white");
+          playSfx("click");
+        },
+      },
     });
 
     // 跨关延续：本局已有宠物 → 重新生成跟随；已持有金钥匙 → 传送门常驻（可反复往返森林）
     if (runState.hasPet) this.pet = new Pet(this, this.cat.x - 40, this.cat.y);
     if (this.inventory.has("golden-key")) this.spawnDoor();
+    // 宝箱：出生点附近的可走点（皮肤没解锁才出现）；黑猫皮肤跨场景延续
+    if (!runState.skinUnlocked) this.spawnChest(world);
+    if (runState.useBlackCat) this.cat.setSkin("black");
   }
 
   update(time: number, delta: number): void {
     if (this.dead) return;
-    this.updateHold2(); // 长按 2 五秒直接进关卡2
+    if (import.meta.env.DEV) this.updateHold2(); // 长按 2 传送是调试后门，仅开发模式可用
     if (this.enteringForest) return; // 进门过场时冻结世界
     const now = time;
 
-    // ---- 背包开关（B）----
-    if (Phaser.Input.Keyboard.JustDown(this.invKey)) this.invUI.toggle();
+    // ---- 背包开关（B）：打开时先取消蓄力（怒气保留），防"背包开着打出飞扑" ----
+    if (Phaser.Input.Keyboard.JustDown(this.invKey)) {
+      if (this.cat.isCharging) this.cat.cancelCharge();
+      playSfx("click");
+      this.invUI.toggle();
+    }
     this.cat.equippedGoldClaw = this.inventory.equippedClaw; // 同步爪痕银/金
+
+    // ---- 静音开关（M）----
+    if (Phaser.Input.Keyboard.JustDown(this.muteKey)) {
+      this.announce(toggleMute() ? "🔇 已静音（按 M 恢复）" : "🔊 声音开");
+    }
 
     // ---- 移动输入 ----
     const dir = new Phaser.Math.Vector2(0, 0);
@@ -242,8 +274,9 @@ export class WorldScene extends Phaser.Scene {
 
     this.cat.update(dir, wantsToRun, delta, now);
 
-    // 蓄力兜底：在蓄力但右键/Y 实际已松开（可能松在画布外，pointerup 没触发）时补发松开
-    if (this.cat.isCharging && !this.isDashHeld()) this.releaseDash();
+    // 蓄力兜底：在蓄力但右键/Y 实际已松开（可能松在画布外，pointerup 没触发）时补发松开。
+    // 背包打开时不补发（打开瞬间已 cancelCharge 取消蓄力），防误触打出飞扑。
+    if (this.cat.isCharging && !this.isDashHeld() && !this.invUI.isOpen) this.releaseDash();
 
     this.updateHit(now);
 
@@ -251,8 +284,8 @@ export class WorldScene extends Phaser.Scene {
     for (const f of this.fish) f.update(now);
     if (Phaser.Input.Keyboard.JustDown(this.eatKey) || this.queuedEat) {
       this.queuedEat = false;
-      // 交互优先级：进门 > 拾取 > 吃鱼（键盘 E / 手柄 A 共用）
-      if (!this.tryOpenDoor() && !this.tryPickup()) this.tryEatFish();
+      // 交互优先级：进门 > 宝箱 > 拾取 > 吃鱼（键盘 E / 手柄 A 共用）
+      if (!this.tryOpenDoor() && !this.tryOpenChest() && !this.tryPickup()) this.tryEatFish();
     }
     this.fish = this.fish.filter((f) => !f.isEaten);
     this.drops = this.drops.filter((d) => !d.isCollected);
@@ -295,6 +328,7 @@ export class WorldScene extends Phaser.Scene {
 
   /** 根据攻击规格在猫前方生成一次命中判定 */
   private spawnHit(spec: AttackSpec, now: number): void {
+    playSfx("swing");
     this.activeHit = {
       damage: Math.round(spec.damage * this.inventory.damageMult), // 装备金爪 ×1.5
       knockback: spec.knockback,
@@ -325,9 +359,12 @@ export class WorldScene extends Phaser.Scene {
       if (Phaser.Math.Distance.Between(cx, cy, e.x, e.y) <= h.radius + 18) {
         h.hitSet.add(e);
         const kd = new Phaser.Math.Vector2(e.x - this.cat.x, e.y - this.cat.y).normalize();
-        // 恐龙按 stunMs(>=1000)自行决定是否打断喷火，史莱姆忽略多余逻辑，统一调用
+        // 恐龙按 stunMs(>=HARD_STUN_MS)自行决定是否打断喷火，史莱姆忽略多余逻辑，统一调用
         e.takeDamage(h.damage, kd.x * h.knockback, kd.y * h.knockback, now, h.stunMs);
         this.cat.addRage(h.damage); // 打中敌人攒怒气
+        playSfx("hit");
+        this.hitStop(50); // 命中顿帧 50ms，打击感
+        if (h.follow) this.cameras.main.shake(90, 0.004); // 飞扑命中加小震屏
         if (e.isDead) this.onTargetDeath(e);
       }
     }
@@ -343,10 +380,11 @@ export class WorldScene extends Phaser.Scene {
         this.dropItem("golden-claw", e.x, e.y);
         this.dinoLootDropped = true;
       }
-      // 击败 2 只恐龙后，金史莱姆出现（只一次，远离猫）
+      // 击败 2 只恐龙后，金史莱姆出现（只一次，远离猫）。
+      // 注意：只在真正生成成功时置位；若随机选点 12 次全失败（被猫挡住），
+      // 下次再杀恐龙（补充的也会）时会重试，避免奖励链永久锁死。
       if (this.dinoKills >= 2 && !this.goldSpawned) {
-        this.goldSpawned = true;
-        this.spawnEnemyOfKind("gold", true);
+        if (this.spawnEnemyOfKind("gold", true)) this.goldSpawned = true;
       }
     } else if (e.kind === "king") {
       this.splitKing(e.x, e.y);
@@ -361,14 +399,31 @@ export class WorldScene extends Phaser.Scene {
   private pressDash(): void {
     const now = this.time.now;
     const spec = this.cat.tryInstantDash(now);
-    if (spec) this.spawnHit(spec, now);
-    else this.cat.beginCharge(now);
+    if (spec) {
+      playSfx("dash");
+      this.spawnHit(spec, now);
+    } else this.cat.beginCharge(now);
   }
 
   /** 松开右键/Y：若蓄满则发动飞扑并生成命中（未蓄满 Cat 内部返回 null，不发动）。 */
   private releaseDash(): void {
     const spec = this.cat.releaseCharge(this.time.now);
-    if (spec) this.spawnHit(spec, this.time.now);
+    if (spec) {
+      playSfx("dash");
+      this.spawnHit(spec, this.time.now);
+    }
+  }
+
+  /** 命中顿帧：暂停整个场景 ms 毫秒（物理/tween/计时全冻），打击感的主要来源。 */
+  private hitStop(ms: number): void {
+    if (this.hitStopping) return;
+    this.hitStopping = true;
+    this.scene.pause();
+    // 用原生 setTimeout 恢复（场景暂停后 Phaser 的 delayedCall 不会走）
+    setTimeout(() => {
+      this.scene.resume();
+      this.hitStopping = false;
+    }, ms);
   }
 
   /** 右键或手柄 Y 是否仍被按住（用于蓄力兜底判断）。 */
@@ -410,6 +465,8 @@ export class WorldScene extends Phaser.Scene {
     target.eat(this);
     this.cat.eat(FISH_HEAL, this.time.now); // 回血 + 播放吃东西动画
     this.showHealText(FISH_HEAL);
+    playSfx("eat");
+    this.pet?.happy(); // 小恐龙看到开饭也很开心
   }
 
   /** 在可吃目标鱼身上画高亮环（提示"按 E 可吃"） */
@@ -426,6 +483,11 @@ export class WorldScene extends Phaser.Scene {
     if (this.door) {
       const dd = Phaser.Math.Distance.Between(this.door.x, this.door.y, this.cat.x, this.cat.y);
       if (dd <= DOOR_RANGE) this.fishMarker.lineStyle(3, 0x66e0ff, pulse).strokeCircle(this.door.x, this.door.y, 30);
+    }
+    // 未开过的宝箱在范围内时高亮（金环，提示"按 E 开箱"）
+    if (this.chest && !this.chestOpened) {
+      const cd = Phaser.Math.Distance.Between(this.chest.x, this.chest.y, this.cat.x, this.cat.y);
+      if (cd <= DOOR_RANGE) this.fishMarker.lineStyle(3, 0xffd23f, pulse).strokeCircle(this.chest.x, this.chest.y, 30);
     }
   }
 
@@ -453,7 +515,9 @@ export class WorldScene extends Phaser.Scene {
   private gameOver(): void {
     if (this.dead) return;
     this.dead = true;
-    runState.reset(); // 死亡 = 本局结束，清空背包/孵化/宠物（仅本局有效）
+    // 孩子向：死亡不清空战利品（背包/宠物/孵化/皮肤全保留），惩罚仅为回出生点重来
+    runState.softReset();
+    playSfx("lose");
     this.cat.die();
     this.physics.pause();
     this.fishMarker.clear();
@@ -485,6 +549,7 @@ export class WorldScene extends Phaser.Scene {
     this.runKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT);
     this.eatKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.E);
     this.invKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.B);
+    this.muteKey = kb.addKey(Phaser.Input.Keyboard.KeyCodes.M);
     this.key2 = kb.addKey(Phaser.Input.Keyboard.KeyCodes.TWO);
 
     // 鼠标：左键爪击 / 右键按住蓄力、松开发动飞扑。disableContextMenu 让右键不弹出菜单。
@@ -669,6 +734,7 @@ export class WorldScene extends Phaser.Scene {
     t.collect(this);
     this.inventory.add(t.itemId);
     this.showPickupText(ITEM_DEFS[t.itemId].name);
+    playSfx("pickup");
     if (t.itemId === "golden-key") this.spawnDoor(); // 捡到金钥匙 → 随机位置出现传送门
     return true;
   }
@@ -677,7 +743,11 @@ export class WorldScene extends Phaser.Scene {
 
   /** 捡到金钥匙后在随机较远的可走点生成一道传送门（只一道）。 */
   private spawnDoor(): void {
-    if (this.door || this.enemyTiles.length === 0) return;
+    if (this.door) return;
+    if (this.enemyTiles.length === 0) {
+      this.announce("这里没有可落脚的地方，传送门打不开了…");
+      return;
+    }
     const T = WORLD.tileSize;
     let bx = this.cat.x;
     let by = this.cat.y;
@@ -696,6 +766,7 @@ export class WorldScene extends Phaser.Scene {
     }
     this.door = this.add.sprite(bx, by, "door").setDepth(10).setScale(0);
     this.tweens.add({ targets: this.door, scale: 1, duration: 320, ease: "Back.out" });
+    playSfx("door");
     this.announce("金钥匙打开了一道传送门！走到门前按 E / A 进入森林");
   }
 
@@ -704,6 +775,44 @@ export class WorldScene extends Phaser.Scene {
     if (!this.door) return false;
     if (Phaser.Math.Distance.Between(this.door.x, this.door.y, this.cat.x, this.cat.y) > DOOR_RANGE) return false;
     this.enterForest();
+    return true;
+  }
+
+  /** 在出生点附近找一个可走点放宝箱（金钥匙开它，解锁黑猫皮肤）。 */
+  private spawnChest(world: GeneratedWorld): void {
+    const T = WORLD.tileSize;
+    const cands: { x: number; y: number }[] = [];
+    for (let y = 1; y < world.height - 1; y++) {
+      for (let x = 1; x < world.width - 1; x++) {
+        if (world.ground[y][x] === TILE.WATER || world.obstacles[y][x] !== EMPTY) continue;
+        const px = (x + 0.5) * T;
+        const py = (y + 0.5) * T;
+        const d = Phaser.Math.Distance.Between(px, py, world.spawn.x, world.spawn.y);
+        if (d >= 100 && d <= 260) cands.push({ x: px, y: py });
+      }
+    }
+    if (cands.length === 0) return;
+    const p = Phaser.Utils.Array.GetRandom(cands);
+    this.chest = this.add.sprite(p.x, p.y, "chest").setDepth(8);
+  }
+
+  /** 靠近宝箱按 E：有金钥匙则开箱解锁黑猫皮肤；没钥匙给一句提示。成功/已提示都返回 true（占掉这次 E）。 */
+  private tryOpenChest(): boolean {
+    const c = this.chest;
+    if (!c || this.chestOpened) return false;
+    if (Phaser.Math.Distance.Between(c.x, c.y, this.cat.x, this.cat.y) > DOOR_RANGE) return false;
+    if (!this.inventory.has("golden-key")) {
+      this.announce("宝箱上了锁，需要一把金钥匙（打倒 2 只恐龙引出金色史莱姆）");
+      return true;
+    }
+    this.chestOpened = true;
+    this.inventory.remove("golden-key", 1);
+    runState.skinUnlocked = true;
+    runState.useBlackCat = true;
+    this.cat.setSkin("black");
+    playSfx("key");
+    this.tweens.add({ targets: c, scale: { from: 1, to: 1.35 }, yoyo: true, duration: 170 });
+    this.announce("🎉 宝箱打开了！你换上了帅气的黑猫皮肤（按 B 在背包里换回白猫）");
     return true;
   }
 
@@ -727,6 +836,7 @@ export class WorldScene extends Phaser.Scene {
   private enterForest(): void {
     if (this.enteringForest) return;
     this.enteringForest = true;
+    playSfx("door");
     this.cat.sprite.setVelocity(0, 0);
     this.physics.pause();
     this.cameras.main.fadeOut(700, 0, 0, 0);
@@ -860,11 +970,33 @@ export class WorldScene extends Phaser.Scene {
       .text(
         16,
         12,
-        "WASD 移动 · Shift 奔跑 · 左键 爪击 · 右键 怒气飞扑 · E 吃鱼/拾取 · B 背包",
+        "WASD 移动 · Shift 奔跑 · 左键 爪击 · 右键 怒气飞扑 · E 吃鱼/拾取 · B 背包 · M 静音",
         { fontSize: "13px", color: "#ffffff" }
       )
       .setScrollFactor(0)
       .setDepth(100);
+    // 当前目标指引（孩子能看懂的一句话目标，随进度变化）
+    this.questText = this.add
+      .text(16, 94, "", {
+        fontSize: "13px",
+        color: "#ffe066",
+        fontStyle: "bold",
+        backgroundColor: "#00000066",
+        padding: { x: 8, y: 4 },
+      })
+      .setScrollFactor(0)
+      .setDepth(100);
+  }
+
+  /** 按当前进度给出一句话目标（HUD 第二行）。 */
+  private getQuestText(): string {
+    if (!this.dinoLootDropped) return `🎯 打倒喷火恐龙 ${Math.min(this.dinoKills, 2)}/2（掉恐龙蛋和金爪子）`;
+    if (!runState.skinUnlocked) {
+      if (this.inventory.has("golden-key")) return "🎯 用金钥匙打开出生点旁的宝箱！";
+      return "🎯 抓住金色史莱姆，拿到金钥匙！";
+    }
+    if (this.door) return "🎯 去金色传送门按 E，进入森林探险！";
+    return "🎯 森林里有松鼠和橘猫等你去挑战！";
   }
 
   /** 小地图：把世界缩放到右上角的小方框，画出猫(白)、敌人(按品种上色)、鱼(橙)的位置 */
@@ -917,6 +1049,7 @@ export class WorldScene extends Phaser.Scene {
     this.hud.fillStyle(0x000000, 0.4).fillRect(16, 72, w, 14);
     this.hud.fillStyle(rageRatio >= 1 ? 0x06d6a0 : 0xfb8500, 1).fillRect(16, 72, w * rageRatio, 14);
 
+    this.questText.setText(this.getQuestText());
     this.drawMinimap();
   }
 }
