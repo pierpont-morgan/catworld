@@ -19,8 +19,10 @@ export class Cat {
   private invulnUntil = 0;
   /** 爪击动画播放到此时刻前不被走/待机动画打断 */
   private attackAnimUntil = 0;
-  /** 当前爪击用的动画前缀（cat-attack=左爪 / cat-attack2=右爪），update 据此续播正确的爪 */
-  private attackAnimBase = "cat-attack";
+  /** 当前爪击用的动画后缀（attack=左爪 / attack2=右爪），update 据此续播正确的爪；完整 key = animPrefix + "-" + 后缀 */
+  private attackAnimBase = "attack";
+  /** 猫动画 key 前缀：白猫 "cat" / 黑猫 "catb"，由 setSkin 切换 */
+  private animPrefix = "cat";
   /** 冲刺飞扑动画播放到此时刻前优先播放 */
   private jumpAnimUntil = 0;
   /** 吃鱼动画播放到此时刻前：站定播吃东西动画，不被走/待机打断 */
@@ -40,7 +42,7 @@ export class Cat {
     this.sprite.setCollideWorldBounds(true);
     this.sprite.setSize(22, 16).setOffset(21, 38); // 贴合 64px 帧里偏下居中的猫身
     this.sprite.setDepth(10);
-    this.sprite.play("cat-idle-down");
+    this.sprite.play(`${this.animPrefix}-idle-down`);
     this.chargeGfx = scene.add.graphics().setDepth(60);
   }
 
@@ -105,17 +107,17 @@ export class Cat {
     // 动画优先级：飞扑 > 蓄力 > 爪击 > 跑/走 > 待机；都按四方向选对应动画（不翻转）
     if (now < this.jumpAnimUntil) {
       // 没有向下飞扑的图：朝下时沿用攻击帧，其余播放飞扑
-      this.sprite.play(facingDir === "down" ? "cat-attack-down" : `cat-jump-${facingDir}`, true);
+      this.sprite.play(facingDir === "down" ? `${this.animPrefix}-attack-down` : `${this.animPrefix}-jump-${facingDir}`, true);
     } else if (charging) {
-      this.sprite.play(`cat-charge-${facingDir}`, true); // 蓄力姿势（坐着挥爪/后腿站立），配合头顶指示环+泛光
+      this.sprite.play(`${this.animPrefix}-charge-${facingDir}`, true); // 蓄力姿势（坐着挥爪/后腿站立），配合头顶指示环+泛光
     } else if (now < this.attackAnimUntil) {
-      this.sprite.play(`${this.attackAnimBase}-${facingDir}`, true);
+      this.sprite.play(`${this.animPrefix}-${this.attackAnimBase}-${facingDir}`, true);
     } else if (eating) {
-      this.sprite.play(`cat-eat-${facingDir}`, true);
+      this.sprite.play(`${this.animPrefix}-eat-${facingDir}`, true);
     } else if (dir.lengthSq() > 0.0001) {
-      this.sprite.play(`cat-${running ? "run" : "walk"}-${facingDir}`, true);
+      this.sprite.play(`${this.animPrefix}-${running ? "run" : "walk"}-${facingDir}`, true);
     } else {
-      this.sprite.play(`cat-idle-${facingDir}`, true);
+      this.sprite.play(`${this.animPrefix}-idle-${facingDir}`, true);
     }
 
     this.drawCharge(now, charging);
@@ -134,8 +136,8 @@ export class Cat {
       // 挥爪动画比命中判定略长，保证动作看得清；每击强制从首帧重播（update 里用
       // ignoreIfPlaying 续播，不打断本次重播）
       this.attackAnimUntil = now + Math.max(spec.activeMs, 320);
-      this.attackAnimBase = spec.comboIndex === 1 ? "cat-attack2" : "cat-attack"; // 1=右爪
-      this.sprite.play(`${this.attackAnimBase}-${this.facingDir()}`, false);
+      this.attackAnimBase = spec.comboIndex === 1 ? "attack2" : "attack"; // 1=右爪
+      this.sprite.play(`${this.animPrefix}-${this.attackAnimBase}-${this.facingDir()}`, false);
       this.spawnClawFx(); // 抬爪时在猫前方闪一道细爪痕
     }
     return spec;
@@ -165,6 +167,25 @@ export class Cat {
     const spec = this.fireDash(now);
     if (spec) this.stats.rage = 0; // 真正发动才清空怒气
     return spec;
+  }
+
+  /**
+   * 取消蓄力（供"开背包时取消蓄力"用）：停蓄力、清指示环与泛光 tint，**怒气保留**不清空。
+   */
+  cancelCharge(): void {
+    if (!this.charging) return;
+    this.charging = false;
+    this.chargeGfx.clear();
+    this.sprite.clearTint();
+  }
+
+  /**
+   * 切换猫皮肤：white=白猫（默认，动画前缀 "cat"）、black=黑猫（动画前缀 "catb"，需要
+   * manifest 注册好 catb-* 系列动画）。切换后按当前朝向重播待机动画。
+   */
+  setSkin(skin: "white" | "black"): void {
+    this.animPrefix = skin === "black" ? "catb" : "cat";
+    this.sprite.play(`${this.animPrefix}-idle-${this.facingDir()}`, true);
   }
 
   /** 打中敌人增加怒气（由场景在命中时调用），不超过上限。 */
@@ -229,6 +250,13 @@ export class Cat {
     if (now < this.invulnUntil) return false;
     this.stats.health = Math.max(0, this.stats.health - amount);
     this.invulnUntil = now + 700;
+    // 红色受击闪：蓄力中不闪，避免与蓄力泛光 tint 冲突
+    if (!this.charging) {
+      this.sprite.setTintFill(0xff5555);
+      this.scene.time.delayedCall(120, () => {
+        if (this.stats.health > 0 && !this.charging) this.sprite.clearTint();
+      });
+    }
     this.scene.tweens.add({
       targets: this.sprite,
       alpha: 0.3,
@@ -249,7 +277,7 @@ export class Cat {
   eat(amount: number, now: number): void {
     this.heal(amount);
     this.eatAnimUntil = now + 700;
-    this.sprite.play(`cat-eat-${this.facingDir()}`, false); // 强制从首帧重播
+    this.sprite.play(`${this.animPrefix}-eat-${this.facingDir()}`, false); // 强制从首帧重播
   }
 
   /** 死亡表现：取消蓄力、停下、变灰、停动画（实际逻辑由场景判定 health<=0）。 */
