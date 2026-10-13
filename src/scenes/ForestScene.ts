@@ -10,6 +10,15 @@ import { runState } from "../core/RunState";
 import { EMPTY, generateForest, GeneratedWorld } from "../core/worldgen";
 import { playSfx, toggleMute } from "../audio/sfx";
 import { BerryBush } from "../entities/BerryBush";
+import {
+  GAMEPAD_DEADZONE,
+  PAD_BTN_A,
+  PAD_BTN_X,
+  PAD_BTN_Y,
+  anyPadButtonDown,
+  listNativePads,
+  readPadMove,
+} from "../input/gamepad";
 
 /**
  * 第二关：森林（22×22 瓦片，面积约主地图 1/5，全是森林）。
@@ -19,10 +28,6 @@ import { BerryBush } from "../entities/BerryBush";
  */
 const FOREST_COLS = 22;
 const FOREST_ROWS = 22;
-const GAMEPAD_DEADZONE = 0.15;
-const PAD_BTN_A = 0;
-const PAD_BTN_X = 2;
-const PAD_BTN_Y = 3;
 const DOOR_RANGE = 76;
 const HATCH_MS = 60000;
 
@@ -68,7 +73,9 @@ export class ForestScene extends Phaser.Scene {
   private muteKey!: Phaser.Input.Keyboard.Key;
 
   private squirrel?: Squirrel;
+  /** 物理体；战斗中与树碰撞，过场关闭以免卡在树后走不到猫旁 */
   private ginger?: Phaser.Physics.Arcade.Sprite;
+  private gingerObstacleCollider?: Phaser.Physics.Arcade.Collider;
   private pet?: Pet;
   private dialog!: DialogBox;
   private invUI!: InventoryUI;
@@ -90,6 +97,8 @@ export class ForestScene extends Phaser.Scene {
   private questText!: Phaser.GameObjects.Text;
 
   private queuedAttack = false;
+  /** 手柄按键上一帧按下状态（边沿检测） */
+  private padPrev: Record<number, boolean> = {};
   private activeHit: ForestHit | null = null;
 
   // 橘猫战斗状态
@@ -111,6 +120,7 @@ export class ForestScene extends Phaser.Scene {
     this.activeHit = null;
     this.squirrel = undefined;
     this.ginger = undefined;
+    this.gingerObstacleCollider = undefined;
     this.pet = undefined;
     this.bushes = [];
     this.squirrelRespawnAt = 0;
@@ -230,11 +240,12 @@ export class ForestScene extends Phaser.Scene {
     if (this.cursors.up.isDown || this.wasd.W.isDown) dir.y -= 1;
     if (this.cursors.down.isDown || this.wasd.S.isDown) dir.y += 1;
     let wantsToRun = this.runKey.isDown;
-    const pad = this.input.gamepad?.getPad(0);
-    if (pad) {
-      const stick = pad.leftStick;
-      if (stick.length() > GAMEPAD_DEADZONE) dir.add(stick);
-      if (pad.R2 > 0.1) wantsToRun = true;
+    if (listNativePads().length > 0) {
+      const move = readPadMove(null, GAMEPAD_DEADZONE);
+      dir.x += move.x;
+      dir.y += move.y;
+      if (move.wantsToRun) wantsToRun = true;
+      this.pollPadButtons();
     }
     dir.limit(1);
 
@@ -389,10 +400,40 @@ export class ForestScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * 每帧轮询手柄脸键边沿（原生 API，合并所有垫）。
+   */
+  private pollPadButtons(): void {
+    const edge = (index: number): boolean => {
+      const down = anyPadButtonDown(index);
+      const prev = !!this.padPrev[index];
+      this.padPrev[index] = down;
+      return down && !prev;
+    };
+    if (this.dialog.isActive) {
+      if (edge(PAD_BTN_A)) this.dialog.advance();
+      return;
+    }
+    if (this.invUI?.isOpen || this.phase === "ginger") {
+      edge(PAD_BTN_A);
+      edge(PAD_BTN_X);
+      edge(PAD_BTN_Y);
+      return;
+    }
+    if (edge(PAD_BTN_X)) this.queuedAttack = true;
+    if (edge(PAD_BTN_Y)) this.pressDash();
+    if (edge(PAD_BTN_A)) {
+      if ((this.phase === "play" || this.phase === "won") && this.nearReturnDoor()) {
+        this.returnToWorld();
+      } else {
+        this.tryPickBerry();
+      }
+    }
+  }
+
   private isDashHeld(): boolean {
     if (this.input.activePointer.rightButtonDown()) return true;
-    const pad = this.input.gamepad?.getPad(0);
-    return !!(pad && pad.buttons[PAD_BTN_Y] && pad.buttons[PAD_BTN_Y].pressed);
+    return anyPadButtonDown(PAD_BTN_Y);
   }
 
   // ----- 抓住松鼠 → 橘猫登场 -----
@@ -412,13 +453,19 @@ export class ForestScene extends Phaser.Scene {
     const H = FOREST_ROWS * WORLD.tileSize;
     const gx = Phaser.Math.Clamp(this.cat.x + 240, 80, W - 80);
     const gy = Phaser.Math.Clamp(this.cat.y - 140, 80, H - 80);
-    // 橘猫用物理体 + 速度移动（带障碍碰撞，不再穿墙；速度按秒算，不随帧率变）
+    // 橘猫用物理体 + 速度移动（过场走来时关闭树木碰撞，避免卡在树后走不到猫旁；战斗中再开启）
     this.ginger = this.physics.add.sprite(gx, gy, "cat-ginger").setDepth(9);
     this.ginger.setCollideWorldBounds(true);
-    this.physics.add.collider(this.ginger, this.obstacleLayer);
+    this.gingerObstacleCollider = this.physics.add.collider(this.ginger, this.obstacleLayer);
+    this.setGingerTreeCollision(false);
     this.physics.add.collider(this.ginger, this.cat.sprite);
     this.ginger.play("cat-ginger-walk-left");
     if (n <= 1) this.announce("你抓住了松鼠！一只橘猫正朝你走来…");
+  }
+
+  /** 过场可穿树；战斗挡树。 */
+  private setGingerTreeCollision(enabled: boolean): void {
+    if (this.gingerObstacleCollider) this.gingerObstacleCollider.active = enabled;
   }
 
   private updateGingerApproach(): void {
@@ -453,6 +500,7 @@ export class ForestScene extends Phaser.Scene {
     this.gingerStunUntil = 0;
     this.gingerHitNextAt = 0;
     this.gingerKb.set(0, 0);
+    this.setGingerTreeCollision(true); // 开战：切磋战斗中不能再穿树
     this.announce("橘猫切磋开始！左键爪击 / 右键蓄力飞扑，打败它！");
   }
 
@@ -506,6 +554,8 @@ export class ForestScene extends Phaser.Scene {
     const g = this.ginger;
     if (g) {
       g.setVelocity(0, 0);
+      const body = g.body as Phaser.Physics.Arcade.Body | null;
+      if (body) body.enable = false;
       this.tweens.add({
         targets: g,
         alpha: 0,

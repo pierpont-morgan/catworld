@@ -12,15 +12,15 @@ import { Inventory, ItemId, ITEM_DEFS } from "../core/Inventory";
 import { runState } from "../core/RunState";
 import { EMPTY, TILE, generateWorld, GeneratedWorld } from "../core/worldgen";
 import { playSfx, toggleMute } from "../audio/sfx";
-
-/** 左摇杆死区，过滤手柄静止时的微小漂移 */
-const GAMEPAD_DEADZONE = 0.15;
-/** 手柄 A 键索引（吃鱼） */
-const PAD_BTN_A = 0;
-/** 手柄 X 键索引（轻攻击/爪击） */
-const PAD_BTN_X = 2;
-/** 手柄 Y 键索引（重攻击/冲刺） */
-const PAD_BTN_Y = 3;
+import {
+  GAMEPAD_DEADZONE,
+  PAD_BTN_A,
+  PAD_BTN_X,
+  PAD_BTN_Y,
+  anyPadButtonDown,
+  listNativePads,
+  readPadMove,
+} from "../input/gamepad";
 
 /** 吃鱼的捕获半径（猫到鱼的中心距离）。需够大以便隔着水从岸边触发 */
 const FISH_CAPTURE_RANGE = 52;
@@ -139,6 +139,8 @@ export class WorldScene extends Phaser.Scene {
   private queuedAttack: "claw" | null = null;
   /** 本帧待执行的吃鱼意图（手柄 A；键盘 E 在 update 里用 JustDown 直接判定） */
   private queuedEat = false;
+  /** 手柄按键上一帧按下状态（边沿检测，兜底事件监听丢失） */
+  private padPrev: Record<number, boolean> = {};
   private activeHit: ActiveHit | null = null;
 
   /** 吃鱼瞄准提示（画在可吃目标鱼身上的高亮环） */
@@ -257,11 +259,13 @@ export class WorldScene extends Phaser.Scene {
 
     let wantsToRun = this.runKey.isDown;
 
-    const pad = this.input.gamepad?.getPad(0);
-    if (pad) {
-      const stick = pad.leftStick;
-      if (stick.length() > GAMEPAD_DEADZONE) dir.add(stick);
-      if (pad.R2 > 0.1) wantsToRun = true;
+    // 原生 API 读所有垫（不依赖 Phaser pad1，避免 Windows 虚拟/多设备占坑导致摇杆为 0）
+    if (listNativePads().length > 0) {
+      const move = readPadMove(null, GAMEPAD_DEADZONE);
+      dir.x += move.x;
+      dir.y += move.y;
+      if (move.wantsToRun) wantsToRun = true;
+      this.pollPadButtons();
     }
     dir.limit(1); // 键盘斜向不超速，摇杆轻推保留模拟速度
 
@@ -426,11 +430,32 @@ export class WorldScene extends Phaser.Scene {
     }, ms);
   }
 
+  /**
+   * 每帧轮询手柄脸键边沿（原生 API，合并所有垫）。
+   * 与 on("down") 并存；queued* 同帧写两次无妨。
+   */
+  private pollPadButtons(): void {
+    const edge = (index: number): boolean => {
+      const down = anyPadButtonDown(index);
+      const prev = !!this.padPrev[index];
+      this.padPrev[index] = down;
+      return down && !prev;
+    };
+    if (this.invUI?.isOpen) {
+      edge(PAD_BTN_A);
+      edge(PAD_BTN_X);
+      edge(PAD_BTN_Y);
+      return;
+    }
+    if (edge(PAD_BTN_X)) this.queuedAttack = "claw";
+    if (edge(PAD_BTN_Y)) this.pressDash();
+    if (edge(PAD_BTN_A)) this.queuedEat = true;
+  }
+
   /** 右键或手柄 Y 是否仍被按住（用于蓄力兜底判断）。 */
   private isDashHeld(): boolean {
     if (this.input.activePointer.rightButtonDown()) return true;
-    const pad = this.input.gamepad?.getPad(0);
-    return !!(pad && pad.buttons[PAD_BTN_Y] && pad.buttons[PAD_BTN_Y].pressed);
+    return anyPadButtonDown(PAD_BTN_Y);
   }
 
   // ----- 吃鱼 -----

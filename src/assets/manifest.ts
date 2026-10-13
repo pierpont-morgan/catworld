@@ -28,14 +28,7 @@ export const SHEETS: SheetSpec[] = [
   // 橘猫（第二关 NPC/敌人，CC0 橘猫表，与白猫同布局）
   { key: "cat-ginger", frameWidth: 64, frameHeight: 64, file: "/assets/cat-ginger.png" },
   // 黑猫皮肤（宝箱奖励，与白猫同版式同帧布局，动画 key 前缀 catb-）。
-  // 注：二进制资源走 API 推不进仓库，暂时引用仓库内已有的原图 raw URL；
-  // 日后用 git 正常提交 public/assets/cat-black.png 后可改回 "/assets/cat-black.png"。
-  {
-    key: "cat-black",
-    frameWidth: 64,
-    frameHeight: 64,
-    file: "https://raw.githubusercontent.com/pierpont-morgan/catworld/main/src/assets/cat/cat%201%20(64%D1%8564).png",
-  },
+  { key: "cat-black", frameWidth: 64, frameHeight: 64, file: "/assets/cat-black.png" },
   { key: "squirrel", frameWidth: 48, frameHeight: 48 }, // 森林松鼠（程序化）
   { key: "slime", frameWidth: 48, frameHeight: 48 },
   // 史莱姆配色变体（程序化，同帧布局换色，见 art/pixelart.ts 的 SLIME_PALETTES）
